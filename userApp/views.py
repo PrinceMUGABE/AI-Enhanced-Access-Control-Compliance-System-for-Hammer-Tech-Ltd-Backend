@@ -13,7 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError
 from .models import CustomUser
-from .serializers import CustomUserSerializer, ContactUsSerializer
+from .serializers import CustomUserSerializer, ContactUsSerializer, DepartmentSerializer
 import re
 import random
 import string
@@ -897,6 +897,7 @@ def update_user_status(request, user_id):
 def get_current_user(request):
     """Get logged-in user's information."""
     serializer = CustomUserSerializer(request.user)
+    print("\n user profile: ", serializer.data, "\n")
     return Response(serializer.data, status=200)
 
 @api_view(['PUT'])
@@ -1571,3 +1572,94 @@ def users_list_create(request):
             return Response({
                 "error": "An unexpected error occurred during registration. Please try again or contact support."
             }, status=500)
+
+
+
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_my_departments(request):
+    """
+    Get departments the logged-in user belongs to based on their role:
+    - Mentee: Returns their single assigned department (ForeignKey)
+    - Mentor: Returns all departments they're associated with (ManyToMany)
+    - Admin/HR: Returns all departments in the system
+    """
+    try:
+        user = CustomUser.objects.get(id=request.user.id)
+    except CustomUser.DoesNotExist:
+        print(f"User with ID {request.user.id} does not exist.")
+        return Response(
+            {
+                'success': False,
+                'message': 'User not found.'
+            },
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    try:
+        # Determine which departments to return based on user role
+        if user.role == 'mentee':
+            # Mentee: get their single department (ForeignKey)
+            if user.department:
+                departments = Department.objects.filter(id=user.department.id)
+            else:
+                departments = Department.objects.none()
+        
+        elif user.role == 'mentor':
+            # Mentor: get all departments they're associated with (ManyToMany)
+            departments = user.departments.all()
+        
+        elif user.role in ['admin', 'hr']:
+            # Admin/HR: get all departments in the system
+            departments = Department.objects.all()
+        
+        else:
+            # Unknown role
+            departments = Department.objects.none()
+        
+        # Optional filtering by status
+        status_filter = request.query_params.get('status', None)
+        if status_filter:
+            if status_filter not in ['active', 'inactive']:
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'Invalid status filter. Use "active" or "inactive".'
+                    },
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            departments = departments.filter(status=status_filter)
+        
+        serializer = DepartmentSerializer(departments, many=True)
+        
+        # Build response message based on role
+        if user.role == 'mentee':
+            message = 'Your assigned department retrieved successfully.'
+        elif user.role == 'mentor':
+            message = 'Your associated departments retrieved successfully.'
+        elif user.role in ['admin', 'hr']:
+            message = 'All departments retrieved successfully.'
+        else:
+            message = 'Departments retrieved successfully.'
+        
+        return Response(
+            {
+                'success': True,
+                'message': message,
+                'count': departments.count(),
+                'user_role': user.role,
+                'data': serializer.data
+            },
+            status=status.HTTP_200_OK
+        )
+    
+    except Exception as e:
+        return Response(
+            {
+                'success': False,
+                'message': f'An error occurred while retrieving your departments: {str(e)}'
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )

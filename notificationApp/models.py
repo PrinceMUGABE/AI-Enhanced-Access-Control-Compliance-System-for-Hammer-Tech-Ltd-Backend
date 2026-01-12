@@ -2,7 +2,7 @@ from django.db import models
 from django.utils.timezone import now
 from userApp.models import CustomUser
 from mentorshipApp.models import Mentorship
-from chatApp.models import ChatRoom, GroupChatRoom
+from chatApp.models import ChatRoom
 
 
 class ChatNotification(models.Model):
@@ -38,13 +38,7 @@ class ChatNotification(models.Model):
         null=True,
         blank=True
     )
-    group_chat_room = models.ForeignKey(
-        GroupChatRoom,
-        on_delete=models.CASCADE,
-        related_name='group_notifications',
-        null=True,
-        blank=True
-    )
+
     notification_type = models.CharField(max_length=20, choices=NOTIFICATION_TYPES)
     title = models.CharField(max_length=200)
     message = models.TextField()

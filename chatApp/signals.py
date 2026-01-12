@@ -5,7 +5,7 @@ from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
 
 from mentorshipApp.models import Mentorship
-from .models import ChatRoom, GroupChatRoom
+from .models import ChatRoom, ChatRoomType, ChatParticipant
 from notificationApp.models import ChatNotification
 from userApp.models import CustomUser
 
@@ -14,224 +14,204 @@ from userApp.models import CustomUser
 def create_mentorship_chats(sender, instance, created, **kwargs):
     """Create chats when mentorship is created"""
     if created and instance.status == 'active':
-        # Create one-on-one mentor-mentee chat
-        ChatRoom.objects.get_or_create(
-            mentorship=instance,
-            chat_type='mentor_mentee',
-            defaults={
-                'user1': instance.mentor,
-                'user2': instance.mentee,
-                'is_active': True
-            }
-        )
-        
         # Get the department from the mentorship
         department = instance.department
         
-        # Generate group chat name
-        chat_name = f"{instance.mentee.full_name}'s Mentorship Group - {department.name}"
-        
-        # Get admin and HR users in the department
-        admin_hr_users = CustomUser.objects.filter(
-            departments=department,
-            role__in=['admin', 'hr'],
-            status='approved'
-        )
-        
         # Create mentorship group chat
-        group_chat = GroupChatRoom.objects.create(
-            name=chat_name,
-            description=f"Mentorship group for {instance.mentee.full_name} in {department.name}",
-            chat_type='mentorship_group',
-            department=department.name,
+        chat_room = ChatRoom.objects.create(
+            name=f"{instance.mentee.full_name}'s Mentorship Group - {department.name}",
+            chat_type=ChatRoomType.MENTORSHIP_GROUP,
             mentorship=instance,
+            department=department,
             created_by=instance.created_by if instance.created_by else instance.mentor,
             is_active=True
         )
         
-        # Add participants to mentorship group
-        # Add mentor
-        group_chat.add_participant(
-            instance.mentor, 
-            added_by=group_chat.created_by, 
-            role='moderator'
+        # Add mentor as participant
+        ChatParticipant.objects.create(
+            chat_room=chat_room,
+            user=instance.mentor,
+            role='admin'
         )
         
-        # Add mentee
-        group_chat.add_participant(
-            instance.mentee, 
-            added_by=group_chat.created_by, 
+        # Add mentee as participant
+        ChatParticipant.objects.create(
+            chat_room=chat_room,
+            user=instance.mentee,
             role='member'
         )
         
-        # Add admin and HR users
+        # Get admin and HR users in the department
+        admin_hr_users = CustomUser.objects.filter(
+            department=department,
+            role__in=['admin', 'hr'],
+            status='approved'
+        )
+        
+        # Add admin and HR users as participants
         for user in admin_hr_users:
-            group_chat.add_participant(
-                user, 
-                added_by=group_chat.created_by, 
+            ChatParticipant.objects.create(
+                chat_room=chat_room,
+                user=user,
                 role='admin'
             )
         
-        # Create or get department-wide group chat
+        # Create or get department-wide chat
         dept_chat_name = f"{department.name} Department Chat"
-        dept_group_chat, dept_created = GroupChatRoom.objects.get_or_create(
-            name=dept_chat_name,
-            chat_type='department_group',
-            department=department.name,
+        dept_chat, dept_created = ChatRoom.objects.get_or_create(
+            chat_type=ChatRoomType.DEPARTMENT_GROUP,
+            department=department,
             defaults={
-                'description': f"Global chat for all mentorship participants in {department.name}",
-                'created_by': group_chat.created_by,
+                'name': dept_chat_name,
+                'created_by': chat_room.created_by,
                 'is_active': True
             }
         )
         
         # Add mentee to department chat if not already a participant
-        if not dept_group_chat.has_participant(instance.mentee):
-            dept_group_chat.add_participant(
-                instance.mentee, 
-                added_by=group_chat.created_by, 
-                role='member'
-            )
+        ChatParticipant.objects.get_or_create(
+            chat_room=dept_chat,
+            user=instance.mentee,
+            defaults={'role': 'member'}
+        )
         
         # Add mentor to department chat if not already a participant
-        if not dept_group_chat.has_participant(instance.mentor):
-            dept_group_chat.add_participant(
-                instance.mentor, 
-                added_by=group_chat.created_by, 
-                role='moderator'
-            )
+        ChatParticipant.objects.get_or_create(
+            chat_room=dept_chat,
+            user=instance.mentor,
+            defaults={'role': 'admin'}
+        )
 
 
 @receiver(post_save, sender=Mentorship)
 def ensure_user_chats_exist(sender, instance, created, **kwargs):
     """Ensure all required chats exist for mentorship participants"""
     if instance.status == 'active':
-        # Ensure one-on-one mentor-mentee chat exists
-        ChatRoom.objects.get_or_create(
-            mentorship=instance,
-            chat_type='mentor_mentee',
-            defaults={
-                'user1': instance.mentor,
-                'user2': instance.mentee,
-                'is_active': True
-            }
-        )
-        
-        # Ensure mentee has one-on-one chats with admin/HR
-        admin_hr_users = CustomUser.objects.filter(
-            role__in=['admin', 'hr'],
-            status='approved'
-        )
-        
-        for staff_user in admin_hr_users:
-            chat_type = 'mentee_admin' if staff_user.role == 'admin' else 'mentee_hr'
-            ChatRoom.objects.get_or_create(
-                user1=instance.mentee,
-                user2=staff_user,
-                defaults={
-                    'chat_type': chat_type,
-                    'is_active': True
-                }
-            )
-        
-        # Ensure mentorship group chat exists
         department = instance.department
         
-        group_chat, group_created = GroupChatRoom.objects.get_or_create(
+        # Ensure mentorship group chat exists
+        chat_room, group_created = ChatRoom.objects.get_or_create(
             mentorship=instance,
-            chat_type='mentorship_group',
+            chat_type=ChatRoomType.MENTORSHIP_GROUP,
             defaults={
                 'name': f"{instance.mentee.full_name}'s Mentorship - {department.name}",
-                'description': f"Mentorship group for {instance.mentee.full_name} with {instance.mentor.full_name}",
-                'department': department.name,
+                'department': department,
                 'created_by': instance.created_by if instance.created_by else instance.mentor,
                 'is_active': True
             }
         )
         
         # Ensure mentor is in the group chat
-        if not group_chat.has_participant(instance.mentor):
-            group_chat.add_participant(
-                instance.mentor, 
-                added_by=group_chat.created_by, 
-                role='moderator'
-            )
+        ChatParticipant.objects.get_or_create(
+            chat_room=chat_room,
+            user=instance.mentor,
+            defaults={'role': 'admin'}
+        )
         
         # Ensure mentee is in the group chat
-        if not group_chat.has_participant(instance.mentee):
-            group_chat.add_participant(
-                instance.mentee, 
-                added_by=group_chat.created_by, 
-                role='member'
-            )
+        ChatParticipant.objects.get_or_create(
+            chat_room=chat_room,
+            user=instance.mentee,
+            defaults={'role': 'member'}
+        )
         
         # Add relevant admin/HR users from the same department
         department_staff = CustomUser.objects.filter(
-            departments=department,
+            department=department,
             role__in=['admin', 'hr'],
             status='approved'
         )
         
         for staff_user in department_staff:
-            if not group_chat.has_participant(staff_user):
-                group_chat.add_participant(
-                    staff_user, 
-                    added_by=group_chat.created_by, 
-                    role='admin'
-                )
+            ChatParticipant.objects.get_or_create(
+                chat_room=chat_room,
+                user=staff_user,
+                defaults={'role': 'admin'}
+            )
         
         # Ensure department group chat exists
         dept_chat_name = f"{department.name} Department Chat"
-        dept_group_chat, dept_created = GroupChatRoom.objects.get_or_create(
-            name=dept_chat_name,
-            chat_type='department_group',
-            department=department.name,
+        dept_chat, dept_created = ChatRoom.objects.get_or_create(
+            chat_type=ChatRoomType.DEPARTMENT_GROUP,
+            department=department,
             defaults={
-                'description': f"Department-wide chat for all {department.name} participants",
-                'created_by': group_chat.created_by,
+                'name': dept_chat_name,
+                'created_by': chat_room.created_by,
                 'is_active': True
             }
         )
         
         # Add mentee to department chat if not already a participant
-        if not dept_group_chat.has_participant(instance.mentee):
-            dept_group_chat.add_participant(
-                instance.mentee, 
-                added_by=dept_group_chat.created_by, 
-                role='member'
-            )
+        ChatParticipant.objects.get_or_create(
+            chat_room=dept_chat,
+            user=instance.mentee,
+            defaults={'role': 'member'}
+        )
         
         # Add mentor to department chat if not already a participant
-        if not dept_group_chat.has_participant(instance.mentor):
-            dept_group_chat.add_participant(
-                instance.mentor, 
-                added_by=dept_group_chat.created_by, 
-                role='moderator'
-            )
+        ChatParticipant.objects.get_or_create(
+            chat_room=dept_chat,
+            user=instance.mentor,
+            defaults={'role': 'admin'}
+        )
 
 
 @receiver(post_save, sender=CustomUser)
-def create_one_on_one_chats_for_new_user(sender, instance, created, **kwargs):
-    """Create one-on-one chats for new users with admin/HR"""
-    if created and instance.role == 'mentee':
-        # Get all admin and HR users
-        admin_hr_users = CustomUser.objects.filter(
-            role__in=['admin', 'hr'],
-            status='approved'
-        )
-        
-        # Create one-on-one chats with each admin/HR
-        for admin_hr_user in admin_hr_users:
-            # Determine chat type based on admin_hr_user role
-            chat_type = 'mentee_admin' if admin_hr_user.role == 'admin' else 'mentee_hr'
-            
-            ChatRoom.objects.get_or_create(
-                user1=instance,
-                user2=admin_hr_user,
+def create_staff_chats_for_new_user(sender, instance, created, **kwargs):
+    """Create chats for new users based on their role"""
+    if created and instance.status == 'approved':
+        # If user is admin or HR, add them to staff chat
+        if instance.role in ['admin', 'hr']:
+            # Get or create staff chat
+            staff_chat, staff_created = ChatRoom.objects.get_or_create(
+                chat_type=ChatRoomType.STAFF_CHAT,
                 defaults={
-                    'chat_type': chat_type,
+                    'name': 'Staff Chat',
+                    'created_by': instance,
                     'is_active': True
                 }
+            )
+            
+            # Add the new staff member to staff chat
+            ChatParticipant.objects.get_or_create(
+                chat_room=staff_chat,
+                user=instance,
+                defaults={'role': 'admin'}
+            )
+        
+        # If user has a department, add them to department chat
+        if instance.department:
+            dept_chat, dept_created = ChatRoom.objects.get_or_create(
+                chat_type=ChatRoomType.DEPARTMENT_GROUP,
+                department=instance.department,
+                defaults={
+                    'name': f"{instance.department.name} Department Chat",
+                    'created_by': instance,
+                    'is_active': True
+                }
+            )
+            
+            # Determine role based on user role
+            participant_role = 'admin' if instance.role in ['admin', 'hr'] else 'member'
+            
+            ChatParticipant.objects.get_or_create(
+                chat_room=dept_chat,
+                user=instance,
+                defaults={'role': participant_role}
+            )
+        
+        # Add to global chat if it exists
+        global_chat = ChatRoom.objects.filter(
+            chat_type=ChatRoomType.GLOBAL,
+            is_active=True
+        ).first()
+        
+        if global_chat:
+            participant_role = 'admin' if instance.role in ['admin', 'hr'] else 'member'
+            ChatParticipant.objects.get_or_create(
+                chat_room=global_chat,
+                user=instance,
+                defaults={'role': participant_role}
             )
 
 

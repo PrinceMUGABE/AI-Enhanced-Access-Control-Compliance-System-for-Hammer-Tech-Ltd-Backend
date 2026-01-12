@@ -12,6 +12,7 @@ from .serializers import (
     DepartmentCreateSerializer, 
     DepartmentUpdateSerializer
 )
+from userApp.models import CustomUser
 
 
 def is_admin(user):
@@ -370,11 +371,43 @@ def delete_department(request, department_id):
 @permission_classes([IsAuthenticated])
 def get_my_departments(request):
     """
-    Get departments created by the logged-in user
+    Get departments the logged-in user belongs to based on their role:
+    - Mentee: Returns their single assigned department (ForeignKey)
+    - Mentor: Returns all departments they're associated with (ManyToMany)
+    - Admin/HR: Returns all departments in the system
     """
     try:
-        # Get departments created by current user
-        departments = Department.objects.filter(created_by=request.user)
+        user = CustomUser.objects.get(id=request.user.id)
+    except CustomUser.DoesNotExist:
+        print(f"User with ID {request.user.id} does not exist.")
+        return Response(
+            {
+                'success': False,
+                'message': 'User not found.'
+            },
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    try:
+        # Determine which departments to return based on user role
+        if user.role == 'mentee':
+            # Mentee: get their single department (ForeignKey)
+            if user.department:
+                departments = Department.objects.filter(id=user.department.id)
+            else:
+                departments = Department.objects.none()
+        
+        elif user.role == 'mentor':
+            # Mentor: get all departments they're associated with (ManyToMany)
+            departments = user.departments.all()
+        
+        elif user.role in ['admin', 'hr']:
+            # Admin/HR: get all departments in the system
+            departments = Department.objects.all()
+        
+        else:
+            # Unknown role
+            departments = Department.objects.none()
         
         # Optional filtering by status
         status_filter = request.query_params.get('status', None)
@@ -391,11 +424,22 @@ def get_my_departments(request):
         
         serializer = DepartmentSerializer(departments, many=True)
         
+        # Build response message based on role
+        if user.role == 'mentee':
+            message = 'Your assigned department retrieved successfully.'
+        elif user.role == 'mentor':
+            message = 'Your associated departments retrieved successfully.'
+        elif user.role in ['admin', 'hr']:
+            message = 'All departments retrieved successfully.'
+        else:
+            message = 'Departments retrieved successfully.'
+        
         return Response(
             {
                 'success': True,
-                'message': 'Your departments retrieved successfully.',
+                'message': message,
                 'count': departments.count(),
+                'user_role': user.role,
                 'data': serializer.data
             },
             status=status.HTTP_200_OK

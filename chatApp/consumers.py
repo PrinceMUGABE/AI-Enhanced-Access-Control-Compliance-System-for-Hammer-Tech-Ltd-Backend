@@ -1,228 +1,86 @@
-# chatApp/consumers.py
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+from django.utils import timezone
 from django.contrib.auth.models import AnonymousUser
-from django.shortcuts import get_object_or_404
-from asgiref.sync import sync_to_async
-from django.utils.timezone import now
 
-from .models import ChatRoom, GroupChatParticipant, Message, ChatNotification
-from .serializers import MessageSerializer
+from .models import ChatParticipant, ChatRoom, Message
 from userApp.models import CustomUser
 
 
-from channels.generic.websocket import AsyncWebsocketConsumer
-from channels.db import database_sync_to_async
-from django.contrib.auth.models import AnonymousUser
-from rest_framework.authtoken.models import Token
-
 class ChatConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        self.room_name = self.scope['url_route']['kwargs']['chat_room_id']
-        self.room_group_name = f'chat_{self.room_name}'
+        print("="*50)
+        print("ChatConsumer.connect() called")
+        print(f"URL route kwargs: {self.scope['url_route']['kwargs']}")
+        print(f"Query string: {self.scope['query_string']}")
+        print("="*50)
+        
+        # Get chat room ID from URL - FIXED: Use room_id consistently
+        try:
+            kwargs = self.scope['url_route']['kwargs']
+            self.room_id = kwargs.get('room_id')
+            
+            if not self.room_id:
+                print(f"ERROR: No room ID found. Available kwargs: {list(kwargs.keys())}")
+                await self.close()
+                return
+            
+            print(f"✅ Successfully got room_id: {self.room_id}")
+            
+        except Exception as e:
+            print(f"❌ Error getting room ID: {e}")
+            import traceback
+            traceback.print_exc()
+            await self.close()
+            return
+            
+        self.room_group_name = f'chat_{self.room_id}'
         
         # Authenticate user
         try:
-            token = self.scope['query_string'].decode().split('=')[1]
+            query_string = self.scope['query_string'].decode()
+            
+            if not query_string:
+                print("❌ No query string provided")
+                await self.close()
+                return
+            
+            # Parse query parameters safely
+            params = {}
+            for param in query_string.split('&'):
+                if '=' in param:
+                    key, value = param.split('=', 1)
+                    params[key] = value
+            
+            token = params.get('token')
+            
+            if not token:
+                print("❌ No token provided in query string")
+                await self.close()
+                return
+                
             user = await self.get_user(token)
             
-            if not user or user.is_anonymous:
+            if not user:
+                print("❌ Invalid token or user not found")
                 await self.close()
                 return
                 
             self.scope['user'] = user
-            await self.accept()
+            self.user_id = user.id
             
-            # Join room group
-            await self.channel_layer.group_add(
-                self.room_group_name,
-                self.channel_name
-            )
-            
-        except Exception as e:
-            print(f"WebSocket connection error: {e}")
-            await self.close()
-
-    @database_sync_to_async
-    def get_user(self, token):
-        try:
-            from rest_framework_simplejwt.tokens import AccessToken
-            access_token = AccessToken(token)
-            from userApp.models import CustomUser
-            return CustomUser.objects.get(id=access_token['user_id'])
-        except Exception as e:
-            print(f"Token validation error: {e}")
-            return None
-
-    async def disconnect(self, close_code):
-        # Leave room group
-        await self.channel_layer.group_discard(
-            self.room_group_name,
-            self.channel_name
-        )
-
-    async def receive(self, text_data):
-        try:
-            data = json.loads(text_data)
-            
-            # Handle different message types
-            if data.get('type') == 'chat_message':
-                message = data['message']
-                
-                # Send message to room group
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'chat_message',
-                        'message': message,
-                        'sender_id': self.scope['user'].id
-                    }
-                )
-            elif data.get('type') == 'video_call_offer':
-                # Forward video call offer to the room group
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'video_call_offer',
-                        'chat_room_id': data.get('chat_room_id'),
-                        'caller_id': data.get('caller_id')
-                    }
-                )
-            elif data.get('type') == 'typing':
-                # Handle typing notifications
-                await self.channel_layer.group_send(
-                    self.room_group_name,
-                    {
-                        'type': 'typing_status',
-                        'user_id': self.scope['user'].id,
-                        'is_typing': data.get('is_typing')
-                    }
-                )
-            elif data.get('type') == 'join':
-                # Handle user joining
-                pass  # You might want to handle this case
-            
-        except json.JSONDecodeError:
-            pass
-
-    # Handler for chat messages
-    async def chat_message(self, event):
-        """Send message to WebSocket"""
-        await self.send(text_data=json.dumps({
-            'type': 'chat_message',
-            'message': event['message'],
-            'sender_id': event['sender_id']
-        }))
-
-    # Handler for video call offers
-    async def video_call_offer(self, event):
-        """Send video call offer to WebSocket"""
-        await self.send(text_data=json.dumps({
-            'type': 'video_call_offer',
-            'chat_room_id': event['chat_room_id'],
-            'caller_id': event['caller_id'],
-            'caller_name': event.get('caller_name', 'User'),
-            'call_type': event.get('call_type', 'video'),
-            'offer': {
-                'type': event.get('offer', {}).get('type', 'offer'),
-                'sdp': event.get('offer', {}).get('sdp', '')
-            }
-        }))
-
-    # Handler for typing status
-    async def typing_status(self, event):
-        """Send typing status to WebSocket"""
-        await self.send(text_data=json.dumps({
-            'type': 'typing_status',
-            'user_id': event['user_id'],
-            'is_typing': event['is_typing']
-        }))
-
-
-class NotificationConsumer(AsyncWebsocketConsumer):
-    """WebSocket consumer for real-time notifications"""
-    
-    async def connect(self):
-        # Check if user is authenticated
-        if self.scope['user'] == AnonymousUser():
-            await self.close()
-            return
-        
-        # Create user-specific group
-        self.user_group_name = f'user_{self.scope["user"].id}'
-        
-        # Join user group
-        await self.channel_layer.group_add(
-            self.user_group_name,
-            self.channel_name
-        )
-        
-        await self.accept()
-    
-    async def disconnect(self, close_code):
-        # Leave user group
-        if hasattr(self, 'user_group_name'):
-            await self.channel_layer.group_discard(
-                self.user_group_name,
-                self.channel_name
-            )
-    
-    async def receive(self, text_data):
-        try:
-            data = json.loads(text_data)
-            message_type = data.get('type')
-            
-            if message_type == 'mark_notification_read':
-                notification_id = data.get('notification_id')
-                await self.mark_notification_read(notification_id)
-                
-        except json.JSONDecodeError:
-            await self.send(text_data=json.dumps({
-                'type': 'error',
-                'message': 'Invalid JSON'
-            }))
-    
-    # WebSocket message handlers
-    async def notification_message(self, event):
-        await self.send(text_data=json.dumps(event))
-    
-    @database_sync_to_async
-    def mark_notification_read(self, notification_id):
-        try:
-            notification = ChatNotification.objects.get(
-                id=notification_id,
-                recipient=self.scope['user']
-            )
-            notification.is_read = True
-            notification.save(update_fields=['is_read'])
-        except ChatNotification.DoesNotExist:
-            pass
-
-
-class GroupChatConsumer(AsyncWebsocketConsumer):
-    """WebSocket consumer for group chats"""
-    
-    async def connect(self):
-        self.room_id = self.scope['url_route']['kwargs']['group_chat_id']
-        self.room_group_name = f'group_chat_{self.room_id}'
-        
-        # Authenticate user
-        try:
-            token = self.scope['query_string'].decode().split('=')[1]
-            user = await self.get_user(token)
-            
-            if not user or user.is_anonymous:
-                await self.close()
-                return
+            print(f"✅ User authenticated: {user.id} ({user.full_name})")
             
             # Check if user is participant
             is_participant = await self.check_participation(user.id, self.room_id)
-            if not is_participant:
+            if not is_participant and user.role not in ['admin', 'hr']:
+                print(f"❌ User {user.id} is not a participant in room {self.room_id}")
                 await self.close()
                 return
             
-            self.scope['user'] = user
+            print(f"✅ User is participant or admin/hr")
+            
             await self.accept()
             
             # Join room group
@@ -231,21 +89,29 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
                 self.channel_name
             )
             
-            # Send online status
+            # FIXED: Get timestamp properly using database_sync_to_async
+            timestamp = await database_sync_to_async(timezone.now)()
+            
+            # Notify others that user joined
             await self.channel_layer.group_send(
                 self.room_group_name,
                 {
-                    'type': 'user_status',
+                    'type': 'user_joined',
                     'user_id': user.id,
-                    'status': 'online',
-                    'username': user.full_name
+                    'full_name': user.full_name,
+                    'timestamp': timestamp.isoformat()
                 }
             )
             
+            print(f"✅ User {user.id} ({user.full_name}) connected to chat room {self.room_id}")
+            print("="*50)
+            
         except Exception as e:
-            print(f"WebSocket connection error: {e}")
+            print(f"❌ WebSocket connection error: {e}")
+            import traceback
+            traceback.print_exc()
             await self.close()
-    
+
     async def disconnect(self, close_code):
         # Leave room group
         if hasattr(self, 'room_group_name'):
@@ -254,18 +120,19 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
                 self.channel_name
             )
             
-            # Send offline status
-            if hasattr(self.scope, 'user'):
+            # Notify others that user left
+            if hasattr(self, 'user_id') and hasattr(self.scope, 'user'):
+                timestamp = await database_sync_to_async(timezone.now)()
                 await self.channel_layer.group_send(
                     self.room_group_name,
                     {
-                        'type': 'user_status',
-                        'user_id': self.scope['user'].id,
-                        'status': 'offline',
-                        'username': self.scope['user'].full_name
+                        'type': 'user_left',
+                        'user_id': self.user_id,
+                        'timestamp': timestamp.isoformat()
                     }
                 )
-    
+                print(f"User {self.user_id} disconnected from chat room {self.room_id}")
+
     async def receive(self, text_data):
         try:
             data = json.loads(text_data)
@@ -277,48 +144,43 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
                 await self.handle_typing_status(data)
             elif message_type == 'read_receipt':
                 await self.handle_read_receipt(data)
-            elif message_type == 'edit_message':
-                await self.handle_edit_message(data)
-            elif message_type == 'delete_message':
-                await self.handle_delete_message(data)
-            elif message_type == 'add_participant':
-                await self.handle_add_participant(data)
-            elif message_type == 'remove_participant':
-                await self.handle_remove_participant(data)
             
-        except json.JSONDecodeError:
-            pass
-    
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error: {e}")
+
     async def handle_chat_message(self, data):
         """Handle sending a chat message"""
-        message = data.get('message', '')
+        message_content = data.get('message', '')
         message_type = data.get('message_type', 'text')
+        attachment = data.get('attachment')
         reply_to_id = data.get('reply_to_id')
         
         # Save message to database
-        message_obj = await self.save_group_message(
-            self.scope['user'].id,
+        message_obj = await self.save_message(
+            self.user_id,
             self.room_id,
-            message,
+            message_content,
             message_type,
+            attachment,
             reply_to_id
         )
         
-        # Send message to room group
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'group_chat_message',
-                'message_id': message_obj.id,
-                'sender_id': self.scope['user'].id,
-                'sender_name': self.scope['user'].full_name,
-                'message': message,
-                'message_type': message_type,
-                'reply_to_id': reply_to_id,
-                'timestamp': message_obj.created_at.isoformat()
-            }
-        )
-    
+        if message_obj:
+            # Send message to room group
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'chat_message',
+                    'message_id': message_obj.id,
+                    'sender_id': self.user_id,
+                    'sender_name': self.scope['user'].full_name,
+                    'message': message_content,
+                    'message_type': message_type,
+                    'attachment': attachment,
+                    'timestamp': message_obj.created_at.isoformat()
+                }
+            )
+
     async def handle_typing_status(self, data):
         """Handle typing status updates"""
         is_typing = data.get('is_typing', False)
@@ -326,247 +188,111 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_send(
             self.room_group_name,
             {
-                'type': 'group_typing_status',
-                'user_id': self.scope['user'].id,
-                'username': self.scope['user'].full_name,
+                'type': 'typing_status',
+                'user_id': self.user_id,
+                'full_name': self.scope['user'].full_name,
                 'is_typing': is_typing
             }
         )
-    
+
     async def handle_read_receipt(self, data):
         """Handle read receipts"""
         message_id = data.get('message_id')
         
-        # Update read status in database
-        await self.mark_message_as_read(
-            message_id,
-            self.scope['user'].id
-        )
-        
         await self.channel_layer.group_send(
             self.room_group_name,
             {
-                'type': 'group_read_receipt',
+                'type': 'read_receipt',
                 'message_id': message_id,
-                'user_id': self.scope['user'].id,
-                'username': self.scope['user'].full_name
+                'user_id': self.user_id,
+                'full_name': self.scope['user'].full_name
             }
         )
-    
-    async def handle_edit_message(self, data):
-        """Handle message editing"""
-        message_id = data.get('message_id')
-        new_content = data.get('new_content')
-        
-        # Update message in database
-        updated = await self.update_group_message(
-            message_id,
-            self.scope['user'].id,
-            new_content
-        )
-        
-        if updated:
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'group_message_edited',
-                    'message_id': message_id,
-                    'new_content': new_content,
-                    'edited_by': self.scope['user'].full_name,
-                    'edited_at': now().isoformat()
-                }
-            )
-    
-    async def handle_delete_message(self, data):
-        """Handle message deletion"""
-        message_id = data.get('message_id')
-        
-        # Delete message in database
-        deleted = await self.delete_group_message(
-            message_id,
-            self.scope['user'].id
-        )
-        
-        if deleted:
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'group_message_deleted',
-                    'message_id': message_id,
-                    'deleted_by': self.scope['user'].full_name
-                }
-            )
-    
-    async def handle_add_participant(self, data):
-        """Handle adding participants"""
-        user_id = data.get('user_id')
-        role = data.get('role', 'member')
-        
-        # Check if requester has permission
-        can_manage = await self.can_manage_participants(
-            self.scope['user'].id,
-            self.room_id
-        )
-        
-        if not can_manage:
-            return
-        
-        # Add participant
-        participant = await self.add_group_participant(
-            self.room_id,
-            user_id,
-            self.scope['user'].id,
-            role
-        )
-        
-        if participant:
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'participant_added',
-                    'user_id': user_id,
-                    'added_by': self.scope['user'].full_name,
-                    'role': role
-                }
-            )
-    
-    async def handle_remove_participant(self, data):
-        """Handle removing participants"""
-        user_id = data.get('user_id')
-        
-        # Check if requester has permission
-        can_manage = await self.can_manage_participants(
-            self.scope['user'].id,
-            self.room_id
-        )
-        
-        if not can_manage:
-            return
-        
-        # Remove participant
-        removed = await self.remove_group_participant(
-            self.room_id,
-            user_id
-        )
-        
-        if removed:
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    'type': 'participant_removed',
-                    'user_id': user_id,
-                    'removed_by': self.scope['user'].full_name
-                }
-            )
-    
+
     # WebSocket message handlers
-    async def group_chat_message(self, event):
+    async def chat_message(self, event):
         await self.send(text_data=json.dumps({
-            'type': 'group_chat_message',
+            'type': 'chat_message',
             'message_id': event['message_id'],
             'sender_id': event['sender_id'],
             'sender_name': event['sender_name'],
             'message': event['message'],
             'message_type': event['message_type'],
-            'reply_to_id': event.get('reply_to_id'),
+            'attachment': event.get('attachment'),
             'timestamp': event['timestamp']
         }))
-    
-    async def group_typing_status(self, event):
+
+    async def typing_status(self, event):
         await self.send(text_data=json.dumps({
-            'type': 'group_typing_status',
+            'type': 'typing_status',
             'user_id': event['user_id'],
-            'username': event['username'],
+            'full_name': event['full_name'],
             'is_typing': event['is_typing']
         }))
-    
-    async def group_read_receipt(self, event):
+
+    # FIXED: Handle video call offer notifications properly
+    async def video_call_offer(self, event):
+        """Forward video call notification to chat participants"""
+        print(f"📞 Forwarding video call notification in chat room {self.room_id}")
+        
         await self.send(text_data=json.dumps({
-            'type': 'group_read_receipt',
+            'type': 'video_call_offer',
+            'call_id': event['call_id'],
+            'caller_id': event['caller_id'],
+            'caller_name': event['caller_name'],
+            'call_type': event['call_type'],
+            'chat_room': event.get('chat_room', {})
+        }))
+
+    async def read_receipt(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'read_receipt',
             'message_id': event['message_id'],
             'user_id': event['user_id'],
-            'username': event['username']
+            'full_name': event['full_name']
         }))
-    
-    async def group_message_edited(self, event):
+
+    async def user_joined(self, event):
         await self.send(text_data=json.dumps({
-            'type': 'group_message_edited',
-            'message_id': event['message_id'],
-            'new_content': event['new_content'],
-            'edited_by': event['edited_by'],
-            'edited_at': event['edited_at']
-        }))
-    
-    async def group_message_deleted(self, event):
-        await self.send(text_data=json.dumps({
-            'type': 'group_message_deleted',
-            'message_id': event['message_id'],
-            'deleted_by': event['deleted_by']
-        }))
-    
-    async def participant_added(self, event):
-        await self.send(text_data=json.dumps({
-            'type': 'participant_added',
+            'type': 'user_joined',
             'user_id': event['user_id'],
-            'added_by': event['added_by'],
-            'role': event['role']
+            'full_name': event['full_name'],
+            'timestamp': event['timestamp']
         }))
-    
-    async def participant_removed(self, event):
+
+    async def user_left(self, event):
         await self.send(text_data=json.dumps({
-            'type': 'participant_removed',
+            'type': 'user_left',
             'user_id': event['user_id'],
-            'removed_by': event['removed_by']
+            'timestamp': event['timestamp']
         }))
-    
-    async def user_status(self, event):
-        await self.send(text_data=json.dumps({
-            'type': 'user_status',
-            'user_id': event['user_id'],
-            'status': event['status'],
-            'username': event['username']
-        }))
-    
+
     # Database operations
     @database_sync_to_async
     def get_user(self, token):
         try:
             from rest_framework_simplejwt.tokens import AccessToken
             access_token = AccessToken(token)
-            from userApp.models import CustomUser
             return CustomUser.objects.get(id=access_token['user_id'])
         except Exception as e:
             print(f"Token validation error: {e}")
             return None
-    
+
     @database_sync_to_async
     def check_participation(self, user_id, chat_room_id):
         try:
-            return GroupChatParticipant.objects.filter(
+            return ChatParticipant.objects.filter(
                 chat_room_id=chat_room_id,
                 user_id=user_id
             ).exists()
         except Exception as e:
             print(f"Error checking participation: {e}")
             return False
-    
+
     @database_sync_to_async
-    def save_group_message(self, user_id, chat_room_id, content, message_type, reply_to_id=None):
+    def save_message(self, user_id, chat_room_id, content, message_type, attachment=None, reply_to_id=None):
         try:
-            from .models import GroupChatMessage, GroupChatRoom, GroupChatParticipant
-            
-            # Update last read time
-            participant = GroupChatParticipant.objects.filter(
-                chat_room_id=chat_room_id,
-                user_id=user_id
-            ).first()
-            
-            if participant:
-                participant.last_read_at = now()
-                participant.save(update_fields=['last_read_at'])
-            
-            # Create message
-            message = GroupChatMessage.objects.create(
+            message = Message.objects.create(
                 chat_room_id=chat_room_id,
                 sender_id=user_id,
                 message_type=message_type,
@@ -574,114 +300,581 @@ class GroupChatConsumer(AsyncWebsocketConsumer):
                 reply_to_id=reply_to_id
             )
             
+            if attachment:
+                message.attachment = attachment
+                message.save()
+            
             return message
         except Exception as e:
-            print(f"Error saving group message: {e}")
+            print(f"Error saving message: {e}")
             return None
-    
-    @database_sync_to_async
-    def mark_message_as_read(self, message_id, user_id):
+
+class VideoCallConsumer(AsyncWebsocketConsumer):
+    async def connect(self):
+        self.call_id = self.scope['url_route']['kwargs']['call_id']
+        self.call_group_name = f'video_call_{self.call_id}'
+        
+        # Authenticate user
         try:
-            from .models import GroupMessageReadStatus
-            GroupMessageReadStatus.objects.get_or_create(
-                message_id=message_id,
-                user_id=user_id,
-                defaults={'read_at': now()}
+            query_string = self.scope['query_string'].decode()
+            
+            if not query_string:
+                print("No query string provided for video call")
+                await self.close()
+                return
+            
+            # Parse query parameters safely
+            params = {}
+            for param in query_string.split('&'):
+                if '=' in param:
+                    key, value = param.split('=', 1)
+                    params[key] = value
+            
+            token = params.get('token')
+            
+            if not token:
+                print("No token provided for video call")
+                await self.close()
+                return
+                
+            user = await self.get_user(token)
+            
+            if not user:
+                print("Invalid token for video call")
+                await self.close()
+                return
+                
+            self.scope['user'] = user
+            self.user_id = user.id
+            
+            await self.accept()
+            
+            # Join call group
+            await self.channel_layer.group_add(
+                self.call_group_name,
+                self.channel_name
             )
-            return True
-        except Exception as e:
-            print(f"Error marking message as read: {e}")
-            return False
-    
-    @database_sync_to_async
-    def update_group_message(self, message_id, user_id, new_content):
-        try:
-            from .models import GroupChatMessage
-            message = GroupChatMessage.objects.get(
-                id=message_id,
-                sender_id=user_id,
-                is_deleted=False
-            )
-            message.content = new_content
-            message.is_edited = True
-            message.edited_at = now()
-            message.save()
-            return True
-        except Exception as e:
-            print(f"Error updating message: {e}")
-            return False
-    
-    @database_sync_to_async
-    def delete_group_message(self, message_id, user_id):
-        try:
-            from .models import GroupChatMessage
-            message = GroupChatMessage.objects.get(id=message_id)
             
-            # Check if user can delete (sender or admin/moderator)
-            from userApp.models import CustomUser
-            user = CustomUser.objects.get(id=user_id)
+            # FIXED: Get timestamp properly
+            timestamp = await database_sync_to_async(timezone.now)()
             
-            if message.sender_id == user_id or user.role in ['admin', 'hr']:
-                message.is_deleted = True
-                message.deleted_at = now()
-                message.save()
-                return True
-            return False
-        except Exception as e:
-            print(f"Error deleting message: {e}")
-            return False
-    
-    @database_sync_to_async
-    def can_manage_participants(self, user_id, chat_room_id):
-        try:
-            from .models import GroupChatParticipant
-            from userApp.models import CustomUser
-            
-            user = CustomUser.objects.get(id=user_id)
-            
-            # Admin and HR can always manage
-            if user.role in ['admin', 'hr']:
-                return True
-            
-            # Check if user is admin or moderator in this chat
-            participant = GroupChatParticipant.objects.filter(
-                chat_room_id=chat_room_id,
-                user_id=user_id
-            ).first()
-            
-            return participant and participant.can_manage_participants()
-        except Exception as e:
-            print(f"Error checking permissions: {e}")
-            return False
-    
-    @database_sync_to_async
-    def add_group_participant(self, chat_room_id, user_id, added_by_id, role):
-        try:
-            from .models import GroupChatParticipant, GroupChatRoom
-            chat_room = GroupChatRoom.objects.get(id=chat_room_id)
-            participant, created = GroupChatParticipant.objects.get_or_create(
-                chat_room=chat_room,
-                user_id=user_id,
-                defaults={
-                    'added_by_id': added_by_id,
-                    'role': role,
-                    'joined_at': now()
+            # Notify others that user joined
+            await self.channel_layer.group_send(
+                self.call_group_name,
+                {
+                    'type': 'user_joined_call',
+                    'user_id': user.id,
+                    'full_name': user.full_name,
+                    'timestamp': timestamp.isoformat()
                 }
             )
-            return participant
+            
+            print(f"User {user.id} joined video call {self.call_id}")
+            
         except Exception as e:
-            print(f"Error adding participant: {e}")
+            print(f"VideoCall WebSocket connection error: {e}")
+            import traceback
+            traceback.print_exc()
+            await self.close()
+
+    async def disconnect(self, close_code):
+        # Leave call group
+        if hasattr(self, 'call_group_name'):
+            await self.channel_layer.group_discard(
+                self.call_group_name,
+                self.channel_name
+            )
+            
+            # Notify others that user left
+            if hasattr(self, 'user_id') and hasattr(self.scope, 'user'):
+                timestamp = await database_sync_to_async(timezone.now)()
+                await self.channel_layer.group_send(
+                    self.call_group_name,
+                    {
+                        'type': 'user_left_call',
+                        'user_id': self.user_id,
+                        'full_name': self.scope['user'].full_name,
+                        'timestamp': timestamp.isoformat()
+                    }
+                )
+            
+            print(f"User {self.user_id} left video call {self.call_id}")
+
+    async def receive(self, text_data):
+        try:
+            data = json.loads(text_data)
+            message_type = data.get('type')
+            
+            print(f"Received message type: {message_type} from user {self.user_id}")
+            
+            if message_type == 'webrtc_offer':
+                await self.handle_webrtc_offer(data)
+            elif message_type == 'webrtc_answer':
+                await self.handle_webrtc_answer(data)
+            elif message_type == 'ice_candidate':
+                await self.handle_ice_candidate(data)
+            elif message_type == 'media_state':
+                await self.handle_media_state(data)
+            elif message_type == 'screen_share':
+                await self.handle_screen_share(data)
+            elif message_type == 'chat_message':
+                await self.handle_chat_message(data)
+            elif message_type == 'call_reject':
+                await self.handle_call_reject(data)
+            elif message_type == 'call_end':
+                await self.handle_call_end(data)
+            
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error: {e}")
+
+    async def handle_webrtc_offer(self, data):
+        target_user_id = data.get('target_user_id')
+        offer = data.get('offer')
+        
+        await self.channel_layer.group_send(
+            self.call_group_name,
+            {
+                'type': 'webrtc_offer_message',
+                'sender_id': self.user_id,
+                'sender_name': self.scope['user'].full_name,
+                'target_user_id': target_user_id,
+                'offer': offer
+            }
+        )
+
+    async def handle_webrtc_answer(self, data):
+        target_user_id = data.get('target_user_id')
+        answer = data.get('answer')
+        
+        await self.channel_layer.group_send(
+            self.call_group_name,
+            {
+                'type': 'webrtc_answer_message',
+                'sender_id': self.user_id,
+                'sender_name': self.scope['user'].full_name,
+                'target_user_id': target_user_id,
+                'answer': answer
+            }
+        )
+
+    async def handle_ice_candidate(self, data):
+        target_user_id = data.get('target_user_id')
+        candidate = data.get('candidate')
+        
+        await self.channel_layer.group_send(
+            self.call_group_name,
+            {
+                'type': 'ice_candidate_message',
+                'sender_id': self.user_id,
+                'sender_name': self.scope['user'].full_name,
+                'target_user_id': target_user_id,
+                'candidate': candidate
+            }
+        )
+
+    async def handle_media_state(self, data):
+        media_type = data.get('media_type')
+        enabled = data.get('enabled', False)
+        
+        await self.channel_layer.group_send(
+            self.call_group_name,
+            {
+                'type': 'media_state_message',
+                'sender_id': self.user_id,
+                'sender_name': self.scope['user'].full_name,
+                'media_type': media_type,
+                'enabled': enabled
+            }
+        )
+
+    async def handle_screen_share(self, data):
+        is_sharing = data.get('is_sharing', False)
+        stream_id = data.get('stream_id')
+        
+        await self.channel_layer.group_send(
+            self.call_group_name,
+            {
+                'type': 'screen_share_message',
+                'sender_id': self.user_id,
+                'sender_name': self.scope['user'].full_name,
+                'is_sharing': is_sharing,
+                'stream_id': stream_id
+            }
+        )
+
+    async def handle_chat_message(self, data):
+        message = data.get('message', '')
+        timestamp = await database_sync_to_async(timezone.now)()
+        
+        await self.channel_layer.group_send(
+            self.call_group_name,
+            {
+                'type': 'call_chat_message',
+                'sender_id': self.user_id,
+                'sender_name': self.scope['user'].full_name,
+                'message': message,
+                'timestamp': timestamp.isoformat()
+            }
+        )
+
+    async def handle_call_reject(self, data):
+        await self.channel_layer.group_send(
+            self.call_group_name,
+            {
+                'type': 'call_reject_message',
+                'sender_id': self.user_id,
+                'sender_name': self.scope['user'].full_name
+            }
+        )
+
+    async def handle_call_end(self, data):
+        await self.channel_layer.group_send(
+            self.call_group_name,
+            {
+                'type': 'call_end_message',
+                'sender_id': self.user_id,
+                'sender_name': self.scope['user'].full_name,
+                'reason': data.get('reason', 'Call ended')
+            }
+        )
+
+    # WebSocket message handlers
+    async def webrtc_offer_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'webrtc_offer',
+            'sender_id': event['sender_id'],
+            'sender_name': event['sender_name'],
+            'target_user_id': event.get('target_user_id'),
+            'offer': event['offer']
+        }))
+
+    async def webrtc_answer_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'webrtc_answer',
+            'sender_id': event['sender_id'],
+            'sender_name': event['sender_name'],
+            'target_user_id': event.get('target_user_id'),
+            'answer': event['answer']
+        }))
+
+    async def ice_candidate_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'ice_candidate',
+            'sender_id': event['sender_id'],
+            'sender_name': event['sender_name'],
+            'target_user_id': event.get('target_user_id'),
+            'candidate': event['candidate']
+        }))
+
+    async def media_state_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'media_state',
+            'sender_id': event['sender_id'],
+            'sender_name': event['sender_name'],
+            'media_type': event['media_type'],
+            'enabled': event['enabled']
+        }))
+
+    async def screen_share_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'screen_share',
+            'sender_id': event['sender_id'],
+            'sender_name': event['sender_name'],
+            'is_sharing': event['is_sharing'],
+            'stream_id': event.get('stream_id')
+        }))
+
+    async def call_chat_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'call_chat_message',
+            'sender_id': event['sender_id'],
+            'sender_name': event['sender_name'],
+            'message': event['message'],
+            'timestamp': event['timestamp']
+        }))
+
+    async def call_reject_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'call_reject',
+            'sender_id': event['sender_id'],
+            'sender_name': event['sender_name']
+        }))
+
+    async def call_end_message(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'call_end',
+            'sender_id': event['sender_id'],
+            'sender_name': event['sender_name'],
+            'reason': event.get('reason', 'Call ended')
+        }))
+
+    async def user_joined_call(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'user_joined_call',
+            'user_id': event['user_id'],
+            'full_name': event['full_name'],
+            'timestamp': event['timestamp']
+        }))
+
+    async def user_left_call(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'user_left_call',
+            'user_id': event['user_id'],
+            'full_name': event['full_name'],
+            'timestamp': event.get('timestamp')
+        }))
+
+    @database_sync_to_async
+    def get_user(self, token):
+        try:
+            from rest_framework_simplejwt.tokens import AccessToken
+            access_token = AccessToken(token)
+            user = CustomUser.objects.get(id=access_token['user_id'])
+            return user
+        except Exception as e:
+            print(f"Token validation error: {e}")
             return None
+        
+
+
+
+
+class UserNotificationConsumer(AsyncWebsocketConsumer):
+    """Consumer for user-specific notifications (like incoming calls)"""
+    
+    async def connect(self):
+        print("="*50)
+        print("UserNotificationConsumer.connect() called")
+        print("="*50)
+        
+        # Authenticate user
+        try:
+            query_string = self.scope['query_string'].decode()
+            
+            if not query_string:
+                print("❌ No query string provided")
+                await self.close()
+                return
+            
+            # Parse query parameters
+            params = {}
+            for param in query_string.split('&'):
+                if '=' in param:
+                    key, value = param.split('=', 1)
+                    params[key] = value
+            
+            token = params.get('token')
+            
+            if not token:
+                print("❌ No token provided")
+                await self.close()
+                return
+                
+            user = await self.get_user(token)
+            
+            if not user:
+                print("❌ Invalid token or user not found")
+                await self.close()
+                return
+                
+            self.scope['user'] = user
+            self.user_id = user.id
+            self.user_group_name = f"user_{user.id}"
+            
+            print(f"✅ User authenticated: {user.id} ({user.full_name})")
+            
+            await self.accept()
+            
+            # Join user-specific group for notifications
+            await self.channel_layer.group_add(
+                self.user_group_name,
+                self.channel_name
+            )
+            
+            print(f"✅ User {user.id} connected to notification channel: {self.user_group_name}")
+            
+        except Exception as e:
+            print(f"❌ WebSocket connection error: {e}")
+            import traceback
+            traceback.print_exc()
+            await self.close()
+    
+    async def disconnect(self, close_code):
+        # Leave user group
+        if hasattr(self, 'user_group_name'):
+            await self.channel_layer.group_discard(
+                self.user_group_name,
+                self.channel_name
+            )
+            print(f"User {self.user_id} disconnected from notification channel")
+    
+    async def receive(self, text_data):
+        """Handle incoming messages (not really used for notifications)"""
+        pass
+    
+    # Handler for incoming video call notifications
+    async def video_call_incoming(self, event):
+        """Forward incoming call notification to user"""
+        print(f"📞 Forwarding incoming call to user {self.user_id}")
+        print(f"Call data: {event}")
+        
+        await self.send(text_data=json.dumps({
+            'type': 'video_call_incoming',
+            'call_id': event['call_id'],
+            'caller': event['caller'],
+            'chat_room': event['chat_room'],
+            'call_type': event['call_type'],
+            'timestamp': event['timestamp']
+        }))
+        
+        print(f"✅ Incoming call notification sent to user {self.user_id}")
+    
+    # Handler for incoming conference call notifications
+    async def conference_call_incoming(self, event):
+        """Forward incoming conference call notification to user"""
+        print(f"📞 Forwarding incoming conference call to user {self.user_id}")
+        
+        await self.send(text_data=json.dumps({
+            'type': 'conference_call_incoming',
+            'call_id': event['call_id'],
+            'caller': event['caller'],
+            'chat_room': event['chat_room'],
+            'call_type': event['call_type'],
+            'participants_count': event['participants_count'],
+            'is_conference': event.get('is_conference', True),
+            'timestamp': event['timestamp']
+        }))
+        
+        print(f"✅ Conference call notification sent to user {self.user_id}")
     
     @database_sync_to_async
-    def remove_group_participant(self, chat_room_id, user_id):
+    def get_user(self, token):
         try:
-            from .models import GroupChatParticipant
-            deleted, _ = GroupChatParticipant.objects.filter(
-                chat_room_id=chat_room_id,
-                user_id=user_id
-            ).delete()
-            return deleted > 0
+            from rest_framework_simplejwt.tokens import AccessToken
+            access_token = AccessToken(token)
+            user = CustomUser.objects.get(id=access_token['user_id'])
+            return user
         except Exception as e:
-            print(f"Error removing participant: {e}")
-            return False
+            print(f"Token validation error: {e}")
+            return None
+
+
+
+class UserNotificationConsumer(AsyncWebsocketConsumer):
+    """Consumer for user-specific notifications (like incoming calls)"""
+    
+    async def connect(self):
+        print("="*50)
+        print("UserNotificationConsumer.connect() called")
+        print("="*50)
+        
+        # Authenticate user
+        try:
+            query_string = self.scope['query_string'].decode()
+            
+            if not query_string:
+                print("❌ No query string provided")
+                await self.close()
+                return
+            
+            # Parse query parameters
+            params = {}
+            for param in query_string.split('&'):
+                if '=' in param:
+                    key, value = param.split('=', 1)
+                    params[key] = value
+            
+            token = params.get('token')
+            
+            if not token:
+                print("❌ No token provided")
+                await self.close()
+                return
+                
+            user = await self.get_user(token)
+            
+            if not user:
+                print("❌ Invalid token or user not found")
+                await self.close()
+                return
+                
+            self.scope['user'] = user
+            self.user_id = user.id
+            self.user_group_name = f"user_{user.id}"
+            
+            print(f"✅ User authenticated: {user.id} ({user.full_name})")
+            
+            await self.accept()
+            
+            # Join user-specific group for notifications
+            await self.channel_layer.group_add(
+                self.user_group_name,
+                self.channel_name
+            )
+            
+            print(f"✅ User {user.id} connected to notification channel: {self.user_group_name}")
+            
+        except Exception as e:
+            print(f"❌ WebSocket connection error: {e}")
+            import traceback
+            traceback.print_exc()
+            await self.close()
+    
+    async def disconnect(self, close_code):
+        # Leave user group
+        if hasattr(self, 'user_group_name'):
+            await self.channel_layer.group_discard(
+                self.user_group_name,
+                self.channel_name
+            )
+            print(f"User {self.user_id} disconnected from notification channel")
+    
+    async def receive(self, text_data):
+        """Handle incoming messages (not really used for notifications)"""
+        pass
+    
+    # Handler for incoming video call notifications
+    async def video_call_incoming(self, event):
+        """Forward incoming call notification to user"""
+        print(f"📞 Forwarding incoming call to user {self.user_id}")
+        print(f"Call data: {event}")
+        
+        await self.send(text_data=json.dumps({
+            'type': 'video_call_incoming',
+            'call_id': event['call_id'],
+            'caller': event['caller'],
+            'chat_room': event['chat_room'],
+            'call_type': event['call_type'],
+            'timestamp': event['timestamp']
+        }))
+        
+        print(f"✅ Incoming call notification sent to user {self.user_id}")
+    
+    # Handler for incoming conference call notifications
+    async def conference_call_incoming(self, event):
+        """Forward incoming conference call notification to user"""
+        print(f"📞 Forwarding incoming conference call to user {self.user_id}")
+        
+        await self.send(text_data=json.dumps({
+            'type': 'conference_call_incoming',
+            'call_id': event['call_id'],
+            'caller': event['caller'],
+            'chat_room': event['chat_room'],
+            'call_type': event['call_type'],
+            'participants_count': event['participants_count'],
+            'is_conference': event.get('is_conference', True),
+            'timestamp': event['timestamp']
+        }))
+        
+        print(f"✅ Conference call notification sent to user {self.user_id}")
+    
+    @database_sync_to_async
+    def get_user(self, token):
+        try:
+            from rest_framework_simplejwt.tokens import AccessToken
+            access_token = AccessToken(token)
+            user = CustomUser.objects.get(id=access_token['user_id'])
+            return user
+        except Exception as e:
+            print(f"Token validation error: {e}")
+            return None

@@ -10,7 +10,7 @@ urlpatterns = [
     path('onboarding/', include('onboarding.urls')),
     path('mentorship/', include('mentorshipApp.urls')),
     path('departments/', include('departmentApp.urls')),
-    path('chat/', include('chatApp.urls')),
+    path('chats/', include('chatApp.urls')),
     path('notifications/', include('notificationApp.urls')),
 ]
 

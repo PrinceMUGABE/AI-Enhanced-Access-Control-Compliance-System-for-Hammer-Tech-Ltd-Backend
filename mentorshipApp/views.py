@@ -1936,6 +1936,7 @@ def get_my_mentorships(request):
         elif user.role == 'mentee':
             mentorships = Mentorship.objects.filter(mentee=user)
         else:
+            print("Admin user trying to access my mentorships")
             return Response({
                 'success': True,
                 'message': 'Admin users should use admin endpoints',
@@ -1957,6 +1958,7 @@ def get_my_mentorships(request):
             many=True,
             context={'request': request}
         )
+        print("\n My mentorships: ",serializer.data, "\n")
         
         return Response({
             'success': True,
@@ -1969,6 +1971,7 @@ def get_my_mentorships(request):
         })
         
     except Exception as e:
+        print(f"Error in get_my_mentorships: {str(e)}")
         return Response({
             'error': 'Failed to fetch your mentorships',
             'detail': str(e)

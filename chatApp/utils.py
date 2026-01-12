@@ -7,9 +7,10 @@ from django.conf import settings
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 
-from .models import ChatNotification, ChatRoom, GroupChatParticipant, GroupChatRoom
+from .models import ChatRoom, GroupChatParticipant, GroupChatRoom
 from userApp.models import CustomUser
 from .serializers import MessageSerializer
+from chatApp.models import ChatNotification
 
 
 def send_notification_to_user(user_id, notification_data):
