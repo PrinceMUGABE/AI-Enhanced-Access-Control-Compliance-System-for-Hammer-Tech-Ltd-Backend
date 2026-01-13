@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'departmentApp',
     'chatApp',
     'notificationApp',
+    'assistanceApp',
 
 
     
@@ -252,3 +253,79 @@ CHANNEL_LAYERS = {
         # },
     },
 }
+
+
+
+
+USE_FREE_AI = True
+
+# Frontend URL for email templates
+FRONTEND_URL = 'http://localhost:5173'  # frontend URL
+
+# Cache settings for FAQ (extend existing CACHES)
+CACHES["assistance"] = {
+    "BACKEND": "django_redis.cache.RedisCache",
+    "LOCATION": "redis://127.0.0.1:6379/2",  # Use database 2 for assistance
+    "OPTIONS": {
+        "CLIENT_CLASS": "django_redis.client.DefaultClient",
+    }
+}
+
+# Rate limiting for assistance app
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '50/hour',
+        'user': '200/hour',
+        'assistance_anon': '20/hour',  # Specific for assistance
+        'assistance_user': '100/hour',
+    }
+}
+
+# Email for assistance responses (extend existing EMAIL settings)
+ASSISTANCE_FROM_EMAIL = 'ai-assistance@digital-mentorship.com'  # Different from regular emails
+
+# Logging configuration
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'assistance_file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'assistance.log'),
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'INFO',
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'loggers': {
+        'assistance': {
+            'handlers': ['assistance_file', 'console'],
+            'level': 'INFO',
+            'propagate': True,
+        },
+    },
+}
+
+# Create logs directory if it doesn't exist
+LOG_DIR = os.path.join(BASE_DIR, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
