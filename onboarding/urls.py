@@ -47,4 +47,8 @@ urlpatterns = [
     path('notifications/mark-all-read/', views.mark_all_notifications_read, name='mark-all-notifications-read'),
 
     path('reminder/send/', views.send_reminder, name='send-reminder'),
+
+    path('modules/<int:pk>/upload-files/', views.upload_module_files, name='upload-module-files'),
+    path('modules/<int:pk>/files/<str:file_id>/', views.delete_module_file, name='delete-module-file'),
+    path('modules/<int:pk>/files/<str:file_id>/download/', views.download_module_file, name='download-module-file'),
 ]

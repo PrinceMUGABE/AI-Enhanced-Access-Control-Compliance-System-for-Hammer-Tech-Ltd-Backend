@@ -156,7 +156,6 @@ SIMPLE_JWT = {
 
 
 # In settings.py
-SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Ensure database-backed sessions
 SESSION_COOKIE_AGE = 86400  # 24 hours
 SESSION_SAVE_EVERY_REQUEST = True  # Extend session on each request
 SESSION_COOKIE_SAMESITE = 'Lax'  # Allow cross-site session
@@ -274,10 +273,10 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/day',
-        'user': '1000/day',
-        'assistance_anon': '20/hour',
-        'assistance_user': '100/hour',
+        'anon': '10000/day',
+        'user': '10000/day',
+        'assistance_anon': '500/hour',
+        'assistance_user': '5000/hour',
     }
 }
 
@@ -290,29 +289,74 @@ LOGGING = {
     'disable_existing_loggers': False,
     'formatters': {
         'verbose': {
-            'format': '{levelname} {asctime} {module} {message}',
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {asctime} {message}',
+            'style': '{',
+        },
+        'colored': {
+            'format': '\033[1;34m[{levelname}]\033[0m {asctime} - \033[1;32m{name}\033[0m - {message}',
             'style': '{',
         },
     },
+    'filters': {
+        'require_debug_true': {
+            '()': 'django.utils.log.RequireDebugTrue',
+        },
+    },
     'handlers': {
-        'assistance_file': {
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+        'file': {
             'level': 'INFO',
             'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'logs', 'assistance.log'),
+            'filename': os.path.join(BASE_DIR, 'logs', 'debug.log'),
             'formatter': 'verbose',
         },
-        'console': {
-            'level': 'INFO',
-            'class': 'logging.StreamHandler',
+        'error_file': {
+            'level': 'ERROR',
+            'class': 'logging.FileHandler',
+            'filename': os.path.join(BASE_DIR, 'logs', 'error.log'),
             'formatter': 'verbose',
         },
     },
     'loggers': {
-        'assistance': {
-            'handlers': ['assistance_file', 'console'],
+        'django': {
+            'handlers': ['console', 'file'],
             'level': 'INFO',
-            'propagate': True,
+            'propagate': False,
         },
+        'django.request': {
+            'handlers': ['console', 'error_file'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+        'django.db.backends': {
+            'handlers': ['console'],
+            'level': 'INFO',  # Set to DEBUG to see SQL queries
+            'propagate': False,
+        },
+        # Your app loggers
+        'userApp': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        'notificationApp': {
+            'handlers': ['console', 'file'],
+            'level': 'DEBUG',
+            'propagate': False,
+        },
+        # Add other apps as needed
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
     },
 }
 
@@ -321,3 +365,24 @@ LOG_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 
 CORS_EXPOSE_HEADERS = ['Content-Type', 'Authorization']
+
+
+
+
+# File upload settings
+FILE_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024  # 100MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 100 * 1024 * 1024  # 100MB
+
+# Media settings
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# Allowed file types
+ALLOWED_FILE_TYPES = {
+    'image': ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'],
+    'video': ['mp4', 'mov', 'avi', 'mkv', 'webm'],
+    'audio': ['mp3', 'wav', 'ogg', 'm4a'],
+    'document': ['pdf', 'doc', 'docx', 'txt', 'ppt', 'pptx', 'xls', 'xlsx']
+}
+
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB per file

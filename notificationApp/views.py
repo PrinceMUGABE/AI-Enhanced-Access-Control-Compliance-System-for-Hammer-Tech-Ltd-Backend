@@ -1,3 +1,5 @@
+import logging
+import traceback
 from django.conf import settings
 from django.shortcuts import render
 from django.forms import ValidationError
@@ -9,48 +11,148 @@ from django.shortcuts import get_object_or_404
 from django.db.models import Q, Count, Avg, F
 from django.utils.timezone import now, timedelta
 from datetime import datetime
+from django.contrib.auth.hashers import check_password, make_password
+from django.db import transaction
 
 from .models import (
     ChatNotification, SystemNotification,
     UserNotificationPreference, NotificationLog
 )
 from .serializers import (
-    ChatNotificationSerializer, SystemNotificationSerializer,
+    ChatNotificationSerializer, SystemNotificationSerializer, UserBasicSerializer,
     UserNotificationPreferenceSerializer, NotificationLogSerializer,
-    CreateSystemNotificationSerializer, MarkNotificationsReadSerializer
+    CreateSystemNotificationSerializer, MarkNotificationsReadSerializer,
+    DeleteNotificationsSerializer, UserProfileSerializer, SendNotificationSerializer
 )
 from userApp.models import CustomUser
+from onboarding.models import OnboardingNotification
+from .utils import log_request, log_error, log_success, log_warning
 
+logger = logging.getLogger(__name__)
 
-# ==================== CHAT NOTIFICATION VIEWS ====================
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def list_chat_notifications(request):
-    """List all chat notifications for the authenticated user"""
+@log_request
+def list_user_notifications(request):
+    """
+    List all notifications for the authenticated user
+    Includes both chat notifications and onboarding notifications
+    """
     try:
         user = request.user
+        
+        # Get query parameters
         notification_type = request.query_params.get('type')
         is_read = request.query_params.get('is_read')
         is_archived = request.query_params.get('is_archived', 'false').lower() == 'true'
+        source = request.query_params.get('source', 'all')  # 'chat', 'onboarding', or 'all'
+        view_all = request.query_params.get('view_all', 'false').lower() == 'true'
         
-        # Base queryset
-        notifications = ChatNotification.objects.filter(recipient=user)
+        log_success(f"Fetching notifications for user: {user.work_mail_address}", {
+            'source': source,
+            'view_all': view_all,
+            'role': user.role
+        })
         
-        # Apply filters
-        if notification_type:
-            notifications = notifications.filter(notification_type=notification_type)
+        all_notifications = []
         
-        if is_read:
-            is_read_bool = is_read.lower() == 'true'
-            notifications = notifications.filter(is_read=is_read_bool)
+        # Fetch Chat Notifications
+        if source in ['chat', 'all']:
+            chat_notifications = ChatNotification.objects.filter(recipient=user)
+            
+            # Admin/HR can see all notifications if explicitly requested
+            if user.role in ['admin', 'hr'] and view_all:
+                chat_notifications = ChatNotification.objects.all()
+                log_success(f"Admin/HR viewing all chat notifications: {chat_notifications.count()}")
+            
+            # Apply filters
+            if notification_type:
+                chat_notifications = chat_notifications.filter(notification_type=notification_type)
+            
+            if is_read:
+                is_read_bool = is_read.lower() == 'true'
+                chat_notifications = chat_notifications.filter(is_read=is_read_bool)
+            
+            if not is_archived:
+                chat_notifications = chat_notifications.filter(is_archived=False)
+            
+            # Convert to unified format
+            for notification in chat_notifications:
+                all_notifications.append({
+                    'id': notification.id,
+                    'source': 'chat',
+                    'notification_type': notification.notification_type,
+                    'title': notification.title,
+                    'message': notification.message,
+                    'sender': {
+                        'id': notification.sender.id if notification.sender else None,
+                        'full_name': notification.sender.full_name if notification.sender else 'System',
+                        'email': notification.sender.email if notification.sender else None
+                    } if notification.sender else None,
+                    'recipient': {
+                        'id': notification.recipient.id,
+                        'full_name': notification.recipient.full_name,
+                        'work_mail_address': notification.recipient.work_mail_address
+                    },
+                    'metadata': notification.metadata or {},
+                    'is_read': notification.is_read,
+                    'is_archived': notification.is_archived,
+                    'created_at': notification.created_at.isoformat(),
+                    'read_at': notification.read_at.isoformat() if notification.read_at else None,
+                    'archived_at': notification.archived_at.isoformat() if notification.archived_at else None
+                })
         
-        # By default, don't show archived notifications
-        if not is_archived:
-            notifications = notifications.filter(is_archived=False)
+        # Fetch Onboarding Notifications
+        if source in ['onboarding', 'all']:
+            onboarding_notifications = OnboardingNotification.objects.filter(recipient=user)
+            
+            # Admin/HR can see all onboarding notifications if explicitly requested
+            if user.role in ['admin', 'hr'] and view_all:
+                onboarding_notifications = OnboardingNotification.objects.all()
+                log_success(f"Admin/HR viewing all onboarding notifications: {onboarding_notifications.count()}")
+            
+            # Apply filters
+            if notification_type:
+                onboarding_notifications = onboarding_notifications.filter(notification_type=notification_type)
+            
+            if is_read:
+                is_read_bool = is_read.lower() == 'true'
+                onboarding_notifications = onboarding_notifications.filter(is_read=is_read_bool)
+            
+            # Convert to unified format
+            for notification in onboarding_notifications:
+                all_notifications.append({
+                    'id': notification.id,
+                    'source': 'onboarding',
+                    'notification_type': notification.notification_type,
+                    'title': notification.title,
+                    'message': notification.message,
+                    'sender': None,  # Onboarding notifications are system-generated
+                    'recipient': {
+                        'id': notification.recipient.id,
+                        'full_name': notification.recipient.full_name,
+                        'work_mail_address': notification.recipient.work_mail_address
+                    },
+                    'metadata': {
+                        'module_id': notification.related_module.id if notification.related_module else None,
+                        'module_title': notification.related_module.title if notification.related_module else None,
+                        'progress_id': notification.related_progress.id if notification.related_progress else None
+                    },
+                    'is_read': notification.is_read,
+                    'is_archived': False,
+                    'created_at': notification.sent_at.isoformat(),
+                    'read_at': notification.read_at.isoformat() if notification.read_at else None,
+                    'archived_at': None
+                })
         
-        # Apply ordering
-        notifications = notifications.order_by('-created_at')
+        # Sort by creation date (newest first)
+        all_notifications.sort(key=lambda x: x['created_at'], reverse=True)
+        
+        log_success(f"Retrieved {len(all_notifications)} notifications", {
+            'total': len(all_notifications),
+            'sources': source
+        })
         
         # Pagination
         limit = request.query_params.get('limit', 20)
@@ -61,32 +163,220 @@ def list_chat_notifications(request):
         except (ValueError, TypeError):
             limit = 20
         
-        notifications = notifications[:limit]
+        total_count = len(all_notifications)
+        paginated_notifications = all_notifications[:limit]
         
-        serializer = ChatNotificationSerializer(notifications, many=True)
-        
-        # Get counts for different notification types
-        counts = {
-            'total': ChatNotification.objects.filter(recipient=user, is_archived=False).count(),
-            'unread': ChatNotification.objects.filter(recipient=user, is_read=False, is_archived=False).count(),
-            'archived': ChatNotification.objects.filter(recipient=user, is_archived=True).count()
-        }
+        # Calculate counts
+        unread_count = len([n for n in all_notifications if not n['is_read']])
+        archived_count = len([n for n in all_notifications if n['is_archived']])
         
         return Response({
             'success': True,
-            'count': notifications.count(),
-            'total_count': counts['total'],
-            'unread_count': counts['unread'],
-            'archived_count': counts['archived'],
-            'notifications': serializer.data
+            'count': len(paginated_notifications),
+            'total_count': total_count,
+            'unread_count': unread_count,
+            'archived_count': archived_count,
+            'notifications': paginated_notifications
         }, status=status.HTTP_200_OK)
     
     except Exception as e:
+        log_error("Error fetching notifications", exception=e, extra_data={
+            'user': user.work_mail_address if user else 'Unknown'
+        })
+        
         return Response({
             'success': False,
-            'error': 'Failed to fetch chat notifications',
-            'detail': str(e)
+            'error': 'Failed to fetch notifications',
+            'detail': str(e),
+            'traceback': traceback.format_exc() if settings.DEBUG else None
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@log_request
+def send_notification(request):
+    """
+    Send notification to users (Admin/HR only)
+    Supports sending to specific users, roles, or departments
+    FIXED: Now actually sends emails!
+    """
+    try:
+        user = request.user
+        
+        # Check permissions
+        if user.role not in ['admin', 'hr']:
+            log_warning(f"Unauthorized notification send attempt by {user.work_mail_address}")
+            return Response({
+                'success': False,
+                'error': 'Only Admin and HR can send notifications'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        serializer = SendNotificationSerializer(data=request.data)
+        
+        if not serializer.is_valid():
+            log_error("Notification validation failed", extra_data=serializer.errors)
+            return Response({
+                'success': False,
+                'error': 'Validation failed',
+                'details': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        data = serializer.validated_data
+        
+        log_success(f"Processing notification send request", {
+            'title': data['title'],
+            'sender': user.work_mail_address,
+            'recipient_params': {
+                'ids': data.get('recipient_ids'),
+                'roles': data.get('recipient_roles'),
+                'departments': data.get('recipient_departments'),
+                'send_to_all': data.get('send_to_all')
+            }
+        })
+        
+        # Determine recipients
+        recipients = []
+        
+        if data.get('recipient_ids'):
+            # Specific users
+            recipients = CustomUser.objects.filter(
+                id__in=data['recipient_ids'],
+                status='approved'
+            )
+            logger.info(f"Sending to specific users: {list(recipients.values_list('id', 'full_name'))}")
+            
+        elif data.get('recipient_roles'):
+            # By role
+            recipients = CustomUser.objects.filter(
+                role__in=data['recipient_roles'],
+                status='approved'
+            )
+            logger.info(f"Sending to roles: {data['recipient_roles']}, found {recipients.count()} users")
+            
+        elif data.get('recipient_departments'):
+            # By department - Fixed for both mentees and mentors
+            recipients = CustomUser.objects.filter(
+                Q(department_id__in=data['recipient_departments']) |  # Mentees
+                Q(departments__id__in=data['recipient_departments']),  # Mentors
+                status='approved'
+            ).distinct()
+            
+            logger.info(f"Sending to departments: {data['recipient_departments']}, found {recipients.count()} users")
+            
+        elif data.get('send_to_all'):
+            # All approved users
+            recipients = CustomUser.objects.filter(status='approved')
+            logger.info(f"Sending to all users: {recipients.count()} users")
+        else:
+            return Response({
+                'success': False,
+                'error': 'No recipients specified'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not recipients.exists():
+            log_warning("No valid recipients found for notification")
+            return Response({
+                'success': False,
+                'error': 'No valid recipients found',
+                'details': 'Make sure selected users have approved status'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Import email utility
+        from .email_utils import send_notification_email
+        
+        # Create notifications
+        notifications_created = 0
+        failed_notifications = []
+        email_stats = {'sent': 0, 'failed': 0}
+        
+        with transaction.atomic():
+            for recipient in recipients:
+                try:
+                    # Create in-app notification
+                    notification = ChatNotification.objects.create(
+                        recipient=recipient,
+                        sender=user,
+                        notification_type=data.get('notification_type', 'announcement'),
+                        title=data['title'],
+                        message=data['message'],
+                        metadata=data.get('metadata', {})
+                    )
+                    notifications_created += 1
+                    
+                    log_success(f"Created notification {notification.id} for {recipient.work_mail_address}")
+                    
+                    # Send email notification - THIS WAS MISSING!
+                    try:
+                        email_sent = send_notification_email(
+                            recipient=recipient,
+                            title=data['title'],
+                            message=data['message'],
+                            notification_type=data.get('notification_type', 'announcement'),
+                            sender=user
+                        )
+                        
+                        if email_sent:
+                            email_stats['sent'] += 1
+                            log_success(f"Email sent to {recipient.email}")
+                        else:
+                            email_stats['failed'] += 1
+                            log_warning(f"Email failed to send to {recipient.email}")
+                    except Exception as email_error:
+                        email_stats['failed'] += 1
+                        log_error(f"Email error for {recipient.email}", exception=email_error)
+                    
+                    # Log the notification
+                    sent_via = ['in-app']
+                    if email_sent:
+                        sent_via.append('email')
+                    
+                    NotificationLog.objects.create(
+                        recipient=recipient,
+                        notification_type=data.get('notification_type', 'announcement'),
+                        title=data['title'],
+                        message=data['message'],
+                        sent_via=sent_via,
+                        success=True
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Failed to create notification for {recipient.full_name}: {str(e)}")
+                    failed_notifications.append({
+                        'user': recipient.full_name,
+                        'email': recipient.email,
+                        'error': str(e)
+                    })
+        
+        response_data = {
+            'success': True,
+            'message': f'Notification sent to {notifications_created} users',
+            'recipients_count': notifications_created,
+            'sent_by': user.full_name,
+            'email_stats': email_stats
+        }
+        
+        if failed_notifications:
+            response_data['failed'] = failed_notifications
+            response_data['failed_count'] = len(failed_notifications)
+        
+        log_success("Notification send completed", response_data)
+        
+        return Response(response_data, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        log_error("Error sending notification", exception=e, extra_data={
+            'user': user.work_mail_address if user else 'Unknown'
+        })
+        
+        return Response({
+            'success': False,
+            'error': 'Failed to send notification',
+            'detail': str(e),
+            'traceback': traceback.format_exc() if settings.DEBUG else None
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 
 
 @api_view(['POST'])
@@ -158,32 +448,121 @@ def mark_chat_notifications_read(request):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
-def mark_all_chat_notifications_read(request):
-    """Mark all chat notifications as read for the authenticated user"""
+@log_request
+def mark_notification_read(request, notification_id):
+    """Mark a specific notification as read (supports both chat and onboarding)"""
     try:
         user = request.user
+        source = request.data.get('source', 'chat')
         
-        updated_count = ChatNotification.objects.filter(
-            recipient=user,
-            is_read=False,
-            is_archived=False
-        ).update(
-            is_read=True,
-            read_at=now()
-        )
+        log_success(f"Marking notification {notification_id} as read", {
+            'user': user.work_mail_address,
+            'source': source
+        })
+        
+        if source == 'chat':
+            notification = get_object_or_404(ChatNotification, id=notification_id)
+            
+            if user.role not in ['admin', 'hr'] and notification.recipient != user:
+                return Response({
+                    'success': False,
+                    'error': 'You can only mark your own notifications as read'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            if not notification.is_read:
+                notification.mark_as_read()
+        
+        elif source == 'onboarding':
+            notification = get_object_or_404(OnboardingNotification, id=notification_id)
+            
+            if user.role not in ['admin', 'hr'] and notification.recipient != user:
+                return Response({
+                    'success': False,
+                    'error': 'You can only mark your own notifications as read'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            if not notification.is_read:
+                notification.mark_as_read()
+        
+        else:
+            return Response({
+                'success': False,
+                'error': 'Invalid notification source'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         return Response({
             'success': True,
-            'message': f'Marked all {updated_count} unread notifications as read',
-            'count': updated_count
+            'message': 'Notification marked as read',
+            'notification_id': notification_id,
+            'source': source
         }, status=status.HTTP_200_OK)
     
     except Exception as e:
+        log_error("Error marking notification as read", exception=e)
         return Response({
             'success': False,
-            'error': 'Failed to mark all notifications as read',
+            'error': 'Failed to mark notification as read',
             'detail': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@log_request
+def mark_all_notifications_read(request):
+    """Mark all notifications as read (both chat and onboarding)"""
+    try:
+        user = request.user
+        source = request.data.get('source', 'all')
+        
+        log_success(f"Marking all notifications as read for {user.work_mail_address}", {
+            'source': source
+        })
+        
+        total_updated = 0
+        
+        if source in ['chat', 'all']:
+            if user.role in ['admin', 'hr']:
+                chat_updated = ChatNotification.objects.filter(
+                    is_read=False,
+                    is_archived=False
+                ).update(is_read=True, read_at=now())
+            else:
+                chat_updated = ChatNotification.objects.filter(
+                    recipient=user,
+                    is_read=False,
+                    is_archived=False
+                ).update(is_read=True, read_at=now())
+            total_updated += chat_updated
+        
+        if source in ['onboarding', 'all']:
+            if user.role in ['admin', 'hr']:
+                onboarding_updated = OnboardingNotification.objects.filter(
+                    is_read=False
+                ).update(is_read=True, read_at=now())
+            else:
+                onboarding_updated = OnboardingNotification.objects.filter(
+                    recipient=user,
+                    is_read=False
+                ).update(is_read=True, read_at=now())
+            total_updated += onboarding_updated
+        
+        return Response({
+            'success': True,
+            'message': f'Marked {total_updated} notifications as read',
+            'count': total_updated,
+            'source': source
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        log_error("Error marking all notifications as read", exception=e)
+        return Response({
+            'success': False,
+            'error': 'Failed to mark notifications as read',
+            'detail': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 
 
 @api_view(['POST'])
@@ -1111,6 +1490,7 @@ def get_user_profile(request):
         
         profile_data = serializer.data
         profile_data['department_info'] = department_info
+
         
         return Response({
             'success': True,
@@ -1306,71 +1686,66 @@ def delete_notifications(request):
         delete_all = data.get('delete_all', False)
         delete_all_read = data.get('delete_all_read', False)
         delete_all_archived = data.get('delete_all_archived', False)
+        source = data.get('source', 'chat')  # 'chat', 'onboarding', or 'all'
         
         deleted_count = 0
         
-        if delete_all:
-            # Delete all notifications (admin/HR can delete all, others only their own)
-            if user.role in ['admin', 'hr']:
-                deleted_count = ChatNotification.objects.filter(is_archived=False).count()
-                ChatNotification.objects.filter(is_archived=False).update(
-                    is_archived=True,
-                    archived_at=now()
-                )
-            else:
-                deleted_count = ChatNotification.objects.filter(recipient=user, is_archived=False).count()
-                ChatNotification.objects.filter(recipient=user, is_archived=False).update(
-                    is_archived=True,
-                    archived_at=now()
-                )
-        
-        elif delete_all_read:
-            # Delete all read notifications
-            if user.role in ['admin', 'hr']:
-                deleted_count = ChatNotification.objects.filter(is_read=True, is_archived=False).count()
-                ChatNotification.objects.filter(is_read=True, is_archived=False).update(
-                    is_archived=True,
-                    archived_at=now()
-                )
-            else:
-                deleted_count = ChatNotification.objects.filter(recipient=user, is_read=True, is_archived=False).count()
-                ChatNotification.objects.filter(recipient=user, is_read=True, is_archived=False).update(
-                    is_archived=True,
-                    archived_at=now()
-                )
-        
-        elif delete_all_archived:
-            # Permanently delete archived notifications (admin/HR only)
-            if user.role not in ['admin', 'hr']:
-                return Response({
-                    'success': False,
-                    'error': 'Only admin and HR can permanently delete archived notifications'
-                }, status=status.HTTP_403_FORBIDDEN)
+        # Delete chat notifications
+        if source in ['chat', 'all']:
+            if delete_all:
+                if user.role in ['admin', 'hr']:
+                    deleted_count += ChatNotification.objects.filter(is_archived=False).count()
+                    ChatNotification.objects.filter(is_archived=False).update(
+                        is_archived=True,
+                        archived_at=now()
+                    )
+                else:
+                    deleted_count += ChatNotification.objects.filter(recipient=user, is_archived=False).count()
+                    ChatNotification.objects.filter(recipient=user, is_archived=False).update(
+                        is_archived=True,
+                        archived_at=now()
+                    )
             
-            deleted_count = ChatNotification.objects.filter(is_archived=True).count()
-            ChatNotification.objects.filter(is_archived=True).delete()
-        
-        elif notification_ids:
-            # Delete specific notifications
-            for notification_id in notification_ids:
-                try:
-                    notification = ChatNotification.objects.get(id=notification_id)
-                    
-                    # Check permissions
-                    if user.role not in ['admin', 'hr'] and notification.recipient != user:
+            elif delete_all_read:
+                if user.role in ['admin', 'hr']:
+                    deleted_count += ChatNotification.objects.filter(is_read=True, is_archived=False).count()
+                    ChatNotification.objects.filter(is_read=True, is_archived=False).update(
+                        is_archived=True,
+                        archived_at=now()
+                    )
+                else:
+                    deleted_count += ChatNotification.objects.filter(recipient=user, is_read=True, is_archived=False).count()
+                    ChatNotification.objects.filter(recipient=user, is_read=True, is_archived=False).update(
+                        is_archived=True,
+                        archived_at=now()
+                    )
+            
+            elif delete_all_archived:
+                if user.role not in ['admin', 'hr']:
+                    return Response({
+                        'success': False,
+                        'error': 'Only admin and HR can permanently delete archived notifications'
+                    }, status=status.HTTP_403_FORBIDDEN)
+                
+                deleted_count += ChatNotification.objects.filter(is_archived=True).count()
+                ChatNotification.objects.filter(is_archived=True).delete()
+            
+            elif notification_ids:
+                for notification_id in notification_ids:
+                    try:
+                        notification = ChatNotification.objects.get(id=notification_id)
+                        
+                        if user.role not in ['admin', 'hr'] and notification.recipient != user:
+                            continue
+                        
+                        if not notification.is_archived:
+                            notification.delete_notification()
+                            deleted_count += 1
+                    except ChatNotification.DoesNotExist:
                         continue
-                    
-                    if not notification.is_archived:
-                        notification.delete_notification()
-                        deleted_count += 1
-                except ChatNotification.DoesNotExist:
-                    continue
         
-        else:
-            return Response({
-                'success': False,
-                'error': 'No operation specified'
-            }, status=status.HTTP_400_BAD_REQUEST)
+        # Note: Onboarding notifications are typically not deleted, only marked as read
+        # But we can add support if needed
         
         return Response({
             'success': True,
@@ -1379,44 +1754,62 @@ def delete_notifications(request):
         }, status=status.HTTP_200_OK)
     
     except Exception as e:
+        logger.exception("Error deleting notifications")
         return Response({
             'success': False,
             'error': 'Failed to delete notifications',
             'detail': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def mark_notification_read(request, notification_id):
-    """Mark a specific notification as read"""
+    """Mark a specific notification as read (supports both chat and onboarding)"""
     try:
         user = request.user
+        source = request.data.get('source', 'chat')  # Default to chat for backward compatibility
         
-        notification = get_object_or_404(ChatNotification, id=notification_id)
+        if source == 'chat':
+            notification = get_object_or_404(ChatNotification, id=notification_id)
+            
+            # Check permissions
+            if user.role not in ['admin', 'hr'] and notification.recipient != user:
+                return Response({
+                    'success': False,
+                    'error': 'You can only mark your own notifications as read'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            if not notification.is_read:
+                notification.mark_as_read()
         
-        # Check permissions
-        if user.role not in ['admin', 'hr'] and notification.recipient != user:
+        elif source == 'onboarding':
+            notification = get_object_or_404(OnboardingNotification, id=notification_id)
+            
+            # Check permissions
+            if user.role not in ['admin', 'hr'] and notification.recipient != user:
+                return Response({
+                    'success': False,
+                    'error': 'You can only mark your own notifications as read'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            if not notification.is_read:
+                notification.mark_as_read()
+        
+        else:
             return Response({
                 'success': False,
-                'error': 'You can only mark your own notifications as read'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        if notification.is_read:
-            return Response({
-                'success': True,
-                'message': 'Notification is already read'
-            }, status=status.HTTP_200_OK)
-        
-        notification.mark_as_read()
+                'error': 'Invalid notification source'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         return Response({
             'success': True,
             'message': 'Notification marked as read',
-            'notification_id': notification_id
+            'notification_id': notification_id,
+            'source': source
         }, status=status.HTTP_200_OK)
     
     except Exception as e:
+        logger.exception("Error marking notification as read")
         return Response({
             'success': False,
             'error': 'Failed to mark notification as read',
@@ -1424,40 +1817,67 @@ def mark_notification_read(request, notification_id):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def mark_all_notifications_read(request):
-    """Mark all notifications as read"""
+    """Mark all notifications as read (both chat and onboarding)"""
     try:
         user = request.user
+        source = request.data.get('source', 'all')  # 'chat', 'onboarding', or 'all'
         
-        if user.role in ['admin', 'hr']:
-            # Admin/HR can mark all notifications as read
-            updated_count = ChatNotification.objects.filter(
-                is_read=False,
-                is_archived=False
-            ).update(
-                is_read=True,
-                read_at=now()
-            )
-        else:
-            # Regular users can only mark their own notifications as read
-            updated_count = ChatNotification.objects.filter(
-                recipient=user,
-                is_read=False,
-                is_archived=False
-            ).update(
-                is_read=True,
-                read_at=now()
-            )
+        total_updated = 0
+        
+        # Mark chat notifications as read
+        if source in ['chat', 'all']:
+            if user.role in ['admin', 'hr']:
+                chat_updated = ChatNotification.objects.filter(
+                    is_read=False,
+                    is_archived=False
+                ).update(
+                    is_read=True,
+                    read_at=now()
+                )
+            else:
+                chat_updated = ChatNotification.objects.filter(
+                    recipient=user,
+                    is_read=False,
+                    is_archived=False
+                ).update(
+                    is_read=True,
+                    read_at=now()
+                )
+            total_updated += chat_updated
+        
+        # Mark onboarding notifications as read
+        if source in ['onboarding', 'all']:
+            if user.role in ['admin', 'hr']:
+                onboarding_updated = OnboardingNotification.objects.filter(
+                    is_read=False
+                ).update(
+                    is_read=True,
+                    read_at=now()
+                )
+            else:
+                onboarding_updated = OnboardingNotification.objects.filter(
+                    recipient=user,
+                    is_read=False
+                ).update(
+                    is_read=True,
+                    read_at=now()
+                )
+            total_updated += onboarding_updated
         
         return Response({
             'success': True,
-            'message': f'Marked {updated_count} notifications as read',
-            'count': updated_count
+            'message': f'Marked {total_updated} notifications as read',
+            'count': total_updated,
+            'source': source
         }, status=status.HTTP_200_OK)
     
     except Exception as e:
+        logger.exception("Error marking all notifications as read")
         return Response({
             'success': False,
             'error': 'Failed to mark notifications as read',
@@ -1469,24 +1889,46 @@ def mark_all_notifications_read(request):
 
 
 
-from django.contrib.auth.hashers import check_password, make_password
+from django.contrib.auth.hashers import check_password
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+from .models import NotificationLog
+from .utils import log_request, log_error, log_success
+
+import re
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@log_request  # This will automatically log request and response
 def change_password(request):
-    """Change user password"""
+    """Change user password with comprehensive validation"""
     try:
         user = request.user
         
-        # Validate required fields
+        # Extract fields
         current_password = request.data.get('current_password')
         new_password = request.data.get('new_password')
         confirm_password = request.data.get('confirm_password')
         
-        if not current_password or not new_password or not confirm_password:
+        # Validate required fields
+        if not current_password:
             return Response({
                 'success': False,
-                'error': 'All password fields are required'
+                'error': 'Current password is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not new_password:
+            return Response({
+                'success': False,
+                'error': 'New password is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not confirm_password:
+            return Response({
+                'success': False,
+                'error': 'Password confirmation is required'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Verify current password
@@ -1496,24 +1938,49 @@ def change_password(request):
                 'error': 'Current password is incorrect'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Validate new password
+        # Check password match
         if new_password != confirm_password:
             return Response({
                 'success': False,
                 'error': 'New passwords do not match'
             }, status=status.HTTP_400_BAD_REQUEST)
         
+        # Check if new password is different from current
+        if check_password(new_password, user.password):
+            return Response({
+                'success': False,
+                'error': 'New password cannot be the same as current password'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate password strength
         if len(new_password) < 8:
             return Response({
                 'success': False,
                 'error': 'Password must be at least 8 characters long'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Check if new password is same as old
-        if check_password(new_password, user.password):
+        if not any(char.isdigit() for char in new_password):
             return Response({
                 'success': False,
-                'error': 'New password cannot be the same as current password'
+                'error': 'Password must contain at least one digit'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not any(char.isupper() for char in new_password):
+            return Response({
+                'success': False,
+                'error': 'Password must contain at least one uppercase letter'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not any(char.islower() for char in new_password):
+            return Response({
+                'success': False,
+                'error': 'Password must contain at least one lowercase letter'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", new_password):
+            return Response({
+                'success': False,
+                'error': 'Password must contain at least one special character (!@#$%^&* etc.)'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Update password
@@ -1521,14 +1988,20 @@ def change_password(request):
         user.save()
         
         # Log the password change
-        NotificationLog.objects.create(
-            recipient=user,
-            notification_type='password_changed',
-            title='Password Changed',
-            message='User changed their password',
-            sent_via=['system'],
-            success=True
-        )
+        try:
+            NotificationLog.objects.create(
+                recipient=user,
+                notification_type='password_changed',
+                title='Password Changed',
+                message=f'Password changed successfully for {user.work_mail_address}',
+                sent_via=['system'],
+                success=True
+            )
+        except Exception as log_error:
+            # Don't fail the request if logging fails
+            pass
+        
+        log_success(f"Password changed successfully for user {user.work_mail_address}")
         
         return Response({
             'success': True,
@@ -1536,8 +2009,17 @@ def change_password(request):
         }, status=status.HTTP_200_OK)
         
     except Exception as e:
+        log_error('Failed to change password', exception=e, extra_data={
+            'user': user.work_mail_address if user else 'Unknown'
+        })
+        
         return Response({
             'success': False,
             'error': 'Failed to change password',
             'detail': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+
+   
+

@@ -1,4 +1,4 @@
-# notificationApp/serializers.py - UPDATED
+# notificationApp/serializers.py - FIXED
 
 from rest_framework import serializers
 from .models import (
@@ -13,6 +13,7 @@ class UserDepartmentSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     name = serializers.CharField()
     status = serializers.CharField()
+
 
 class UserBasicSerializer(serializers.ModelSerializer):
     """Basic user info"""
@@ -53,65 +54,54 @@ class UserProfileSerializer(serializers.ModelSerializer):
 
 
 class ChatNotificationSerializer(serializers.ModelSerializer):
-    """Serializer for chat notifications"""
+    """Serializer for chat notifications - FIXED"""
     sender = UserProfileSerializer(read_only=True)
     recipient = UserProfileSerializer(read_only=True)
-    
-    class Meta:
-        model = ChatNotification
-        fields = [
-            'id', 'recipient', 'sender', 'notification_type', 
-            'title', 'message', 'metadata', 'is_read', 'is_archived',
-            'created_at', 'read_at', 'archived_at'
-        ]
-        read_only_fields = fields
-
-
-class DeleteNotificationsSerializer(serializers.Serializer):
-    """Serializer for deleting notifications"""
-    notification_ids = serializers.ListField(
-        child=serializers.IntegerField(),
-        required=True
-    )
-    delete_all = serializers.BooleanField(default=False)
-    delete_all_read = serializers.BooleanField(default=False)
-    delete_all_archived = serializers.BooleanField(default=False)
-
-
-class ChatNotificationSerializer(serializers.ModelSerializer):
-    """Serializer for chat notifications"""
-    sender = UserBasicSerializer(read_only=True)
-    recipient = UserBasicSerializer(read_only=True)
     chat_room_info = serializers.SerializerMethodField()
-    group_chat_room_info = serializers.SerializerMethodField()
     
     class Meta:
         model = ChatNotification
         fields = [
-            'id', 'recipient', 'sender', 'notification_type', 'title', 'message',
-            'chat_room', 'chat_room_info', 'group_chat_room', 'group_chat_room_info',
-            'is_read', 'is_archived', 'created_at', 'read_at', 'archived_at'
+            'id', 'recipient', 'sender', 'chat_room', 'mentorship',
+            'notification_type', 'title', 'message', 'metadata', 
+            'chat_room_info', 'is_read', 'is_archived',
+            'created_at', 'read_at', 'archived_at'
         ]
         read_only_fields = fields
     
     def get_chat_room_info(self, obj):
+        """Get chat room information based on notification type and chat_room"""
         if obj.chat_room:
+            chat_room = obj.chat_room
+            
+            # Try to access the chat type if it exists
+            try:
+                chat_type = getattr(chat_room, 'chat_type', 'one_on_one')
+                
+                # Handle one-on-one chats
+                if hasattr(chat_room, 'user1') and hasattr(chat_room, 'user2'):
+                    return {
+                        'id': chat_room.id,
+                        'type': chat_type,
+                        'other_user': {
+                            'id': chat_room.user1.id if obj.recipient != chat_room.user1 else chat_room.user2.id,
+                            'name': chat_room.user1.full_name if obj.recipient != chat_room.user1 else chat_room.user2.full_name,
+                        }
+                    }
+                # Handle group chats if they have a name attribute
+                elif hasattr(chat_room, 'name'):
+                    return {
+                        'id': chat_room.id,
+                        'name': chat_room.name,
+                        'type': chat_type
+                    }
+            except AttributeError:
+                pass
+            
+            # Fallback if we can't determine the chat type
             return {
-                'id': obj.chat_room.id,
-                'type': 'one_on_one',
-                'other_user': {
-                    'id': obj.chat_room.user1.id if obj.recipient != obj.chat_room.user1 else obj.chat_room.user2.id,
-                    'name': obj.chat_room.user1.full_name if obj.recipient != obj.chat_room.user1 else obj.chat_room.user2.full_name,
-                }
-            }
-        return None
-    
-    def get_group_chat_room_info(self, obj):
-        if obj.group_chat_room:
-            return {
-                'id': obj.group_chat_room.id,
-                'name': obj.group_chat_room.name,
-                'type': obj.group_chat_room.chat_type
+                'id': chat_room.id,
+                'type': 'unknown'
             }
         return None
 
@@ -205,3 +195,67 @@ class CreateSystemNotificationSerializer(serializers.ModelSerializer):
             if invalid_roles:
                 raise serializers.ValidationError(f"Invalid roles: {invalid_roles}. Valid roles are: {valid_roles}")
         return value
+
+
+class SendNotificationSerializer(serializers.Serializer):
+    """Serializer for sending notifications (Admin/HR only)"""
+    title = serializers.CharField(max_length=200, required=True)
+    message = serializers.CharField(required=True)
+    notification_type = serializers.CharField(max_length=50, default='announcement')
+    metadata = serializers.JSONField(required=False, default=dict)
+    
+    # Recipient selection (one must be provided)
+    recipient_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False
+    )
+    recipient_roles = serializers.ListField(
+        child=serializers.CharField(),
+        required=False
+    )
+    recipient_departments = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False
+    )
+    send_to_all = serializers.BooleanField(default=False, required=False)
+    
+    def validate(self, data):
+        """Validate that at least one recipient method is specified"""
+        has_recipients = (
+            data.get('recipient_ids') or 
+            data.get('recipient_roles') or 
+            data.get('recipient_departments') or 
+            data.get('send_to_all')
+        )
+        
+        if not has_recipients:
+            raise serializers.ValidationError(
+                "At least one recipient method must be specified"
+            )
+        
+        # Validate roles if provided
+        if data.get('recipient_roles'):
+            valid_roles = ['admin', 'hr', 'mentor', 'mentee']
+            invalid_roles = [role for role in data['recipient_roles'] if role not in valid_roles]
+            if invalid_roles:
+                raise serializers.ValidationError({
+                    'recipient_roles': f"Invalid roles: {invalid_roles}"
+                })
+        
+        return data
+
+
+class DeleteNotificationsSerializer(serializers.Serializer):
+    """Serializer for deleting notifications"""
+    notification_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False
+    )
+    delete_all = serializers.BooleanField(default=False)
+    delete_all_read = serializers.BooleanField(default=False)
+    delete_all_archived = serializers.BooleanField(default=False)
+    source = serializers.ChoiceField(
+        choices=['chat', 'onboarding', 'all'],
+        default='chat',
+        required=False
+    )

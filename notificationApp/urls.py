@@ -1,3 +1,4 @@
+# notificationApp/urls.py
 from django.urls import path
 from . import views
 
@@ -5,20 +6,19 @@ urlpatterns = [
     # Profile Management
     path('profile/', views.get_user_profile, name='get_user_profile'),
     path('profile/update/', views.update_user_profile, name='update_user_profile'),
-    
-    # Add this missing endpoint for password change
     path('profile/change-password/', views.change_password, name='change_password'),
     
-    # Notification Management - Add slash for root
+    # UNIFIED Notification Management (supports both chat and onboarding)
     path('', views.list_user_notifications, name='list_user_notifications'),
+    path('send/', views.send_notification, name='send_notification'),
     path('delete/', views.delete_notifications, name='delete_notifications'),
     path('<int:notification_id>/read/', views.mark_notification_read, name='mark_notification_read'),
     path('mark-all-read/', views.mark_all_notifications_read, name='mark_all_notifications_read'),
     
-    # Keep existing URLs for backward compatibility
-    path('chat/', views.list_chat_notifications, name='list_chat_notifications'),
+    # Legacy Chat Notification URLs (for backward compatibility)
+    # path('chat/', views.list_chat_notifications, name='list_chat_notifications'),
     path('chat/mark-read/', views.mark_chat_notifications_read, name='mark_chat_notifications_read'),
-    path('chat/mark-all-read/', views.mark_all_chat_notifications_read, name='mark_all_chat_notifications_read'),
+    path('chat/mark-all-read/', views.mark_all_notifications_read, name='mark_all_chat_notifications_read'),
     path('chat/<int:notification_id>/archive/', views.archive_chat_notification, name='archive_chat_notification'),
     path('chat/archive-all-read/', views.archive_all_read_chat_notifications, name='archive_all_read_chat_notifications'),
     
@@ -36,4 +36,5 @@ urlpatterns = [
     # Notification Statistics (Admin/HR only)
     path('stats/', views.get_notification_statistics, name='get_notification_statistics'),
     path('logs/', views.get_notification_logs, name='get_notification_logs'),
+
 ]

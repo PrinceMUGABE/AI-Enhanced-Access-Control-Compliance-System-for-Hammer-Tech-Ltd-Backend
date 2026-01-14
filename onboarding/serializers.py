@@ -1,5 +1,7 @@
 # onboarding/serializers.py - Fixed version
-
+import logging
+import uuid
+from django.conf import settings
 from rest_framework import serializers
 from .models import (
     OnboardingModule, 
@@ -10,7 +12,9 @@ from .models import (
 )
 from userApp.models import CustomUser
 from departmentApp.models import Department
+from .utils import FileUploadHandler
 
+logger = logging.getLogger(__name__)
 
 class DepartmentSerializer(serializers.ModelSerializer):
     """Serializer for Department model"""
@@ -32,6 +36,19 @@ class OnboardingChecklistSerializer(serializers.ModelSerializer):
         ]
 
 
+class FileUploadSerializer(serializers.Serializer):
+    """Serializer for optional file upload"""
+    file = serializers.FileField(required=False, allow_null=True)
+    title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    type = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    
+    def validate(self, data):
+        """Custom validation - file is optional"""
+        # No validation needed since file is optional
+        return data
+
+
 class OnboardingModuleCreateSerializer(serializers.ModelSerializer):
     checklist_items = OnboardingChecklistSerializer(many=True, required=False)
     departments = serializers.PrimaryKeyRelatedField(
@@ -40,6 +57,7 @@ class OnboardingModuleCreateSerializer(serializers.ModelSerializer):
         required=False,
         write_only=True
     )
+    files = FileUploadSerializer(many=True, required=False, write_only=True)
     
     class Meta:
         model = OnboardingModule
@@ -54,18 +72,86 @@ class OnboardingModuleCreateSerializer(serializers.ModelSerializer):
             'content',
             'resources',
             'is_active',
-            'checklist_items'
+            'checklist_items',
+            'files'
         ]
     
+    def validate(self, data):
+        """Validate file uploads - files are optional"""
+        files = data.get('files', [])
+        
+        for file_data in files:
+            file = file_data.get('file')
+            if file:  # Only validate if file exists
+                # Check file size
+                if file.size > settings.MAX_FILE_SIZE:
+                    raise serializers.ValidationError(
+                        f"File {file.name} exceeds maximum size of {settings.MAX_FILE_SIZE / (1024*1024)}MB"
+                    )
+                
+                # Check file type
+                ext = file.name.split('.')[-1].lower()
+                allowed = False
+                for allowed_exts in settings.ALLOWED_FILE_TYPES.values():
+                    if ext in allowed_exts:
+                        allowed = True
+                        break
+                
+                if not allowed:
+                    raise serializers.ValidationError(
+                        f"File type {ext} is not allowed"
+                    )
+        
+        return data
+    
     def create(self, validated_data):
+        files_data = validated_data.pop('files', [])
         checklist_items_data = validated_data.pop('checklist_items', [])
         departments_data = validated_data.pop('departments', [])
         
+        # Create module
         module = OnboardingModule.objects.create(**validated_data)
         
-        # Add departments if provided
+        # Add departments
         if departments_data:
             module.departments.set(departments_data)
+        
+        # Handle file uploads - files are optional
+        multimedia_files = []
+        for file_data in files_data:
+            file = file_data.get('file')
+            if not file:
+                continue  # Skip if no file
+                
+            title = file_data.get('title', '')
+            description = file_data.get('description', '')
+            file_type = file_data.get('type', '')
+            
+            try:
+                # Save file and get metadata
+                file_handler = FileUploadHandler()
+                file_metadata = file_handler.save_file(
+                    file=file,
+                    module_id=module.id,
+                    user_id=self.context['request'].user.id
+                )
+                
+                # Add custom metadata
+                file_metadata['title'] = title or file.name
+                file_metadata['description'] = description
+                if file_type:
+                    file_metadata['type'] = file_type
+                
+                multimedia_files.append(file_metadata)
+                
+            except Exception as e:
+                logger.error(f"Error saving file {file.name}: {str(e)}")
+                continue
+        
+        # Save files to module if any were uploaded
+        if multimedia_files:
+            module.multimedia_files = multimedia_files
+            module.save()
         
         # Create checklist items
         for item_data in checklist_items_data:
@@ -74,17 +160,51 @@ class OnboardingModuleCreateSerializer(serializers.ModelSerializer):
         return module
     
     def update(self, instance, validated_data):
+        files_data = validated_data.pop('files', [])  # Get files, default to empty list
         checklist_items_data = validated_data.pop('checklist_items', None)
         departments_data = validated_data.pop('departments', None)
         
         # Update module fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        instance.save()
         
         # Update departments if provided
         if departments_data is not None:
             instance.departments.set(departments_data)
+        
+        # Handle file updates - append new files to existing ones
+        if files_data:
+            multimedia_files = instance.multimedia_files or []
+            
+            for file_data in files_data:
+                file = file_data.get('file')
+                if not file:
+                    continue  # Skip if no file
+                    
+                title = file_data.get('title', '')
+                description = file_data.get('description', '')
+                file_type = file_data.get('type', '')
+                
+                try:
+                    file_handler = FileUploadHandler()
+                    file_metadata = file_handler.save_file(
+                        file=file,
+                        module_id=instance.id,
+                        user_id=self.context['request'].user.id
+                    )
+                    
+                    file_metadata['title'] = title or file.name
+                    file_metadata['description'] = description
+                    if file_type:
+                        file_metadata['type'] = file_type
+                    
+                    multimedia_files.append(file_metadata)
+                    
+                except Exception as e:
+                    logger.error(f"Error saving file {file.name}: {str(e)}")
+                    continue
+            
+            instance.multimedia_files = multimedia_files
         
         # Update checklist items if provided
         if checklist_items_data is not None:
@@ -92,24 +212,8 @@ class OnboardingModuleCreateSerializer(serializers.ModelSerializer):
             for item_data in checklist_items_data:
                 OnboardingChecklist.objects.create(module=instance, **item_data)
         
+        instance.save()
         return instance
-    
-    def validate(self, data):
-        """Validate module data"""
-        module_type = data.get('module_type')
-        departments = data.get('departments', [])
-        
-        # For core modules, clear departments
-        if module_type == 'core':
-            data['departments'] = []
-        # For department modules, ensure at least one department is selected
-        elif module_type == 'department' and not departments:
-            raise serializers.ValidationError({
-                'departments': 'At least one department is required for department-specific modules'
-            })
-        
-        return data
-
 
 class OnboardingModuleSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.full_name', read_only=True)
@@ -124,6 +228,7 @@ class OnboardingModuleSerializer(serializers.ModelSerializer):
     total_mentees_assigned = serializers.SerializerMethodField()
     total_completed = serializers.SerializerMethodField()
     department_stats = serializers.SerializerMethodField()
+    multimedia_files = serializers.SerializerMethodField()
     
     class Meta:
         model = OnboardingModule
@@ -148,9 +253,33 @@ class OnboardingModuleSerializer(serializers.ModelSerializer):
             'checklist_items',
             'total_mentees_assigned',
             'total_completed',
-            'department_stats'
+            'department_stats',
+            'multimedia_files',
         ]
         read_only_fields = ['created_at', 'updated_at', 'created_by']
+
+    def get_multimedia_files(self, obj):
+        """Process multimedia files with proper metadata"""
+        files = obj.multimedia_files or []
+        processed_files = []
+        
+        for file in files:
+            processed_file = {
+                'id': file.get('id', str(uuid.uuid4())),
+                'url': file.get('url', ''),
+                'type': file.get('type', ''),
+                'title': file.get('title', ''),
+                'description': file.get('description', ''),
+                'size': file.get('size', 0),
+                'duration': file.get('duration', 0),  # For audio/video
+                'thumbnail': file.get('thumbnail', ''),  # For videos
+                'extension': file.get('extension', ''),
+                'uploaded_at': file.get('uploaded_at', ''),
+                'uploaded_by': file.get('uploaded_by', '')
+            }
+            processed_files.append(processed_file)
+        
+        return processed_files
     
     def get_applicable_departments(self, obj):
         return obj.get_applicable_departments()

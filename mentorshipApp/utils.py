@@ -14,6 +14,51 @@ from chatApp.models import ChatRoom, ChatRoomType, ChatParticipant, Message
 from userApp.models import CustomUser
 import logging
 
+import traceback
+from django.utils.timezone import now
+from datetime import timedelta
+from django.forms import ValidationError
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+from django.db.models import Q, Count, Avg
+from django.utils.timezone import now
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
+from datetime import timedelta
+from notificationApp.models import ChatNotification
+from chatApp.models import ChatRoom
+from departmentApp.models import Department
+from django.db import transaction
+
+from django.db import transaction, DatabaseError
+from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned, PermissionDenied
+from rest_framework.exceptions import ValidationError as DRFValidationError
+import logging
+
+logger = logging.getLogger(__name__)
+
+from .models import (
+    MentorshipProgram, Mentorship, MentorshipProgramProgress, MentorshipSession,
+    MentorshipMessage, MentorshipReview,
+    ProgramSessionTemplate
+)
+from .serializers import (
+     DepartmentSerializer, MentorshipProgramSerializer, MentorshipSerializer,
+    MentorshipSessionSerializer,
+    SessionCreateSerializer,
+    MentorshipReviewSerializer, ProgramSessionTemplateSerializer,
+      SessionCompletionSerializer, MentorshipSessionSerializer, MentorshipCreateSerializer, UserMentorshipSerializer
+    
+)
+from userApp.models import CustomUser
+from departmentApp.models import Department
+from rest_framework import serializers
+from django.db.models import Count, Q, F, Sum, Max, Min
+from django.utils import timezone
+
 logger = logging.getLogger(__name__)
 
 def send_session_scheduled_notification(session):
@@ -566,3 +611,81 @@ def validate_file_upload(file):
         return False, "File type not allowed."
     
     return True, "File is valid."
+
+
+
+
+# Add this at the top of the file or create a utils.py file
+class ErrorHandler:
+    """Utility class for consistent error handling across views"""
+    
+    @staticmethod
+    def handle_view_error(func):
+        """Decorator to handle errors in view functions"""
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except DRFValidationError as e:
+                logger.warning(f"Validation error in {func.__name__}: {str(e)}")
+                return Response({
+                    'success': False,
+                    'error': 'Validation failed',
+                    'detail': str(e.detail) if hasattr(e, 'detail') else str(e)
+                }, status=status.HTTP_400_BAD_REQUEST)
+            except PermissionDenied as e:
+                logger.warning(f"Permission denied in {func.__name__}: {str(e)}")
+                return Response({
+                    'success': False,
+                    'error': 'Permission denied',
+                    'detail': str(e)
+                }, status=status.HTTP_403_FORBIDDEN)
+            except ObjectDoesNotExist as e:
+                logger.error(f"Object not found in {func.__name__}: {str(e)}")
+                return Response({
+                    'success': False,
+                    'error': 'Resource not found',
+                    'detail': str(e)
+                }, status=status.HTTP_404_NOT_FOUND)
+            except DatabaseError as e:
+                logger.error(f"Database error in {func.__name__}: {str(e)}")
+                return Response({
+                    'success': False,
+                    'error': 'Database error occurred',
+                    'detail': 'Please try again later'
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            except Exception as e:
+                logger.exception(f"Unexpected error in {func.__name__}")
+                return Response({
+                    'success': False,
+                    'error': 'An unexpected error occurred',
+                    'detail': str(e),
+                    'timestamp': now().isoformat()
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return wrapper
+    
+    @staticmethod
+    def validate_query_params(params, validation_rules):
+        """Validate query parameters against rules"""
+        errors = {}
+        for param, value in params.items():
+            if param in validation_rules:
+                rule = validation_rules[param]
+                try:
+                    if 'type' in rule:
+                        if rule['type'] == 'int':
+                            int_value = int(value)
+                            if 'min' in rule and int_value < rule['min']:
+                                errors[param] = f"Must be at least {rule['min']}"
+                            if 'max' in rule and int_value > rule['max']:
+                                errors[param] = f"Must be at most {rule['max']}"
+                        elif rule['type'] == 'str':
+                            if 'max_length' in rule and len(value) > rule['max_length']:
+                                errors[param] = f"Must be at most {rule['max_length']} characters"
+                        elif rule['type'] == 'choice':
+                            if value not in rule['choices']:
+                                errors[param] = f"Must be one of: {', '.join(rule['choices'])}"
+                except ValueError:
+                    errors[param] = f"Invalid format for {param}"
+        
+        if errors:
+            raise DRFValidationError(errors)

@@ -1,3 +1,4 @@
+import uuid
 from django.db import models
 from django.utils.timezone import now
 from django.db.models import Avg, Sum
@@ -29,6 +30,17 @@ class OnboardingModule(models.Model):
         null=True, 
         blank=True,
         related_name='created_modules'
+    )
+
+    multimedia_files = models.JSONField(
+        default=list,
+        help_text="List of multimedia files (images, videos, audio, documents)"
+    )
+    
+    # Update the resources field to be more specific
+    resources = models.JSONField(
+        default=list,
+        help_text="List of external resources (links to documents, websites, etc.)"
     )
     
     class Meta:
@@ -113,6 +125,7 @@ class OnboardingModule(models.Model):
             )['avg_time']
             return round(avg_time, 1) if avg_time else None
         return None
+    
     def get_department_stats(self):
         """Get statistics by department"""
         departments = self.departments.all()
@@ -139,6 +152,49 @@ class OnboardingModule(models.Model):
             })
         
         return stats
+    
+
+    def add_file(self, file_data):
+        """Add a file to module's multimedia files"""
+        if not self.multimedia_files:
+            self.multimedia_files = []
+        
+        # Create unique ID for file
+        if 'id' not in file_data:
+            file_data['id'] = str(uuid.uuid4())
+        
+        self.multimedia_files.append(file_data)
+        self.save()
+    
+    def remove_file(self, file_id):
+        """Remove a file from module's multimedia files"""
+        if not self.multimedia_files:
+            return False
+        
+        original_length = len(self.multimedia_files)
+        self.multimedia_files = [
+            file for file in self.multimedia_files 
+            if file.get('id') != file_id
+        ]
+        
+        if len(self.multimedia_files) < original_length:
+            self.save()
+            return True
+        
+        return False
+    
+    def get_files_by_type(self, file_type=None):
+        """Get files filtered by type"""
+        if not self.multimedia_files:
+            return []
+        
+        if file_type:
+            return [
+                file for file in self.multimedia_files 
+                if file.get('type') == file_type
+            ]
+        
+        return self.multimedia_files
 
 
 class MenteeOnboardingProgress(models.Model):

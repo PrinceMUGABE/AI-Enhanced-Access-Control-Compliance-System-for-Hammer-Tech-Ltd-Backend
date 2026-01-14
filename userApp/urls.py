@@ -38,4 +38,7 @@ urlpatterns = [
     path('auth/password-reset/verify-otp/', views.verify_reset_otp, name='verify-reset-otp'),
     path('auth/password-reset/confirm/', views.reset_password_with_otp, name='reset-password-with-otp'),
     path('profile/change-password/', views.change_password, name='profile-change-password'),
+
+    path('auth/logout/', views.logout_user, name='auth-logout'),
+    path('auth/verify-token/', views.verify_token, name='verify-token'),
 ]

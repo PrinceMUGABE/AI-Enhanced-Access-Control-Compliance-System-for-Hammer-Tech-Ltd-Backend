@@ -1,4 +1,4 @@
-
+# urls.py - ROOT URLS
 from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
@@ -11,11 +11,9 @@ urlpatterns = [
     path('mentorship/', include('mentorshipApp.urls')),
     path('departments/', include('departmentApp.urls')),
     path('chats/', include('chatApp.urls')),
-    path('notifications/', include('notificationApp.urls')),
+    path('notifications/', include('notificationApp.urls')),  # This should work
     path('assistance/', include('assistanceApp.urls')),
-
 ]
-
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

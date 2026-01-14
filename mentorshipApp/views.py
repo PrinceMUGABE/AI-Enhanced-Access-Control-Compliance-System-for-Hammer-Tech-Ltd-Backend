@@ -1,3 +1,6 @@
+import traceback
+from django.utils.timezone import now
+from datetime import timedelta
 from django.forms import ValidationError
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -13,6 +16,13 @@ from notificationApp.models import ChatNotification
 from chatApp.models import ChatRoom
 from departmentApp.models import Department
 from django.db import transaction
+
+from django.db import transaction, DatabaseError
+from django.core.exceptions import ObjectDoesNotExist, MultipleObjectsReturned, PermissionDenied
+from rest_framework.exceptions import ValidationError as DRFValidationError
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .models import (
     MentorshipProgram, Mentorship, MentorshipProgramProgress, MentorshipSession,
@@ -34,6 +44,7 @@ from django.db.models import Count, Q, F, Sum, Max, Min
 from django.utils import timezone
 
 from .utils import (
+    ErrorHandler,
     send_session_scheduled_notification,
     send_session_completed_notification,
     send_session_cancelled_notification,
@@ -1403,17 +1414,20 @@ def reschedule_session(request, session_id):
         
         # Check permissions
         if user not in [session.mentorship.mentor, session.mentorship.mentee] and user.role not in ['admin', 'hr']:
+            print('Permission denied')
             return Response({
                 'error': 'Permission denied'
             }, status=status.HTTP_403_FORBIDDEN)
         
         if session.status != 'scheduled':
+            print('Can only reschedule sessions with scheduled status')
             return Response({
                 'error': 'Can only reschedule sessions with scheduled status'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         new_date = request.data.get('new_date')
         if not new_date:
+            print('New date is required')
             return Response({
                 'error': 'New date is required'
             }, status=status.HTTP_400_BAD_REQUEST)
@@ -1422,11 +1436,13 @@ def reschedule_session(request, session_id):
         try:
             new_date = datetime.fromisoformat(new_date.replace('Z', '+00:00'))
         except (ValueError, AttributeError):
+            print('Invalid date format. Use ISO format (YYYY-MM-DDTHH:MM:SS)')
             return Response({
                 'error': 'Invalid date format. Use ISO format (YYYY-MM-DDTHH:MM:SS)'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         if new_date < now():
+            print('Cannot reschedule to a past date')
             return Response({
                 'error': 'Cannot reschedule to a past date'
             }, status=status.HTTP_400_BAD_REQUEST)
@@ -1458,6 +1474,7 @@ def reschedule_session(request, session_id):
         }, status=status.HTTP_200_OK)
     
     except Exception as e:
+        print('Failed to reschedule session', str(e))
         return Response({
             'error': 'Failed to reschedule session',
             'detail': str(e)
@@ -1715,111 +1732,323 @@ def get_my_sessions(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@ErrorHandler.handle_view_error
 def get_my_dashboard(request):
     """Get dashboard data for the logged-in user"""
     try:
+        logger.info(f"get_my_dashboard called by user: {request.user.id} ({request.user.role})")
         user = request.user
         
+        # Validate user role
         if user.role not in ['mentor', 'mentee']:
+            logger.info(f"User {user.id} has role '{user.role}' - dashboard only for mentors/mentees")
             return Response({
                 'success': True,
-                'message': 'Dashboard only for mentors and mentees'
-            })
+                'message': 'Dashboard only available for mentors and mentees',
+                'user_role': user.role
+            }, status=status.HTTP_200_OK)
         
-        # Get user's mentorships
-        if user.role == 'mentor':
-            all_mentorships = Mentorship.objects.filter(mentor=user)
-        else:
-            all_mentorships = Mentorship.objects.filter(mentee=user)
-        
-        active_mentorships = all_mentorships.filter(status='active')
-        
-        # Calculate statistics
-        stats = {
-            'total_mentorships': all_mentorships.count(),
-            'active_mentorships': active_mentorships.count(),
-            'completed_mentorships': all_mentorships.filter(status='completed').count(),
-            'pending_mentorships': all_mentorships.filter(status='pending').count(),
-        }
-        
-        # Get upcoming sessions (next 7 days)
-        upcoming_sessions = MentorshipSession.objects.filter(
-            mentorship__in=active_mentorships,
-            status='scheduled',
-            scheduled_date__gte=now(),
-            scheduled_date__lte=now() + timedelta(days=7)
-        ).order_by('scheduled_date')[:5]
-        
-        # Get recent sessions (last 7 days)
-        recent_sessions = MentorshipSession.objects.filter(
-            mentorship__in=all_mentorships,
-            status='completed',
-            actual_date__gte=now() - timedelta(days=7)
-        ).order_by('-actual_date')[:5]
-        
-        return Response({
+        # Initialize response data
+        response_data = {
             'success': True,
             'user': {
                 'id': user.id,
                 'full_name': user.full_name,
-                'role': user.role
+                'role': user.role,
+                'email': user.email
             },
-            'statistics': stats,
-            'upcoming_sessions': MentorshipSessionSerializer(upcoming_sessions, many=True).data,
-            'recent_sessions': MentorshipSessionSerializer(recent_sessions, many=True).data
-        })
+            'statistics': {
+                'total_mentorships': 0,
+                'active_mentorships': 0,
+                'completed_mentorships': 0,
+                'pending_mentorships': 0,
+            },
+            'upcoming_sessions': [],
+            'recent_sessions': [],
+            'mentor_performance': None
+        }
+        
+        # Get user's mentorships with error handling
+        try:
+            if user.role == 'mentor':
+                all_mentorships = Mentorship.objects.filter(mentor=user)
+                logger.debug(f"Mentor {user.id} has {all_mentorships.count()} total mentorships")
+            else:
+                all_mentorships = Mentorship.objects.filter(mentee=user)
+                logger.debug(f"Mentee {user.id} has {all_mentorships.count()} total mentorships")
+            
+            # Calculate statistics with validation
+            try:
+                active_mentorships = all_mentorships.filter(status='active')
+                completed_mentorships = all_mentorships.filter(status='completed')
+                pending_mentorships = all_mentorships.filter(status='pending')
+                
+                response_data['statistics'] = {
+                    'total_mentorships': all_mentorships.count(),
+                    'active_mentorships': active_mentorships.count(),
+                    'completed_mentorships': completed_mentorships.count(),
+                    'pending_mentorships': pending_mentorships.count(),
+                }
+                logger.debug(f"Dashboard statistics for user {user.id}: {response_data['statistics']}")
+            except Exception as e:
+                logger.error(f"Error calculating statistics for user {user.id}: {str(e)}")
+                # Keep default statistics
+            
+            # Get upcoming sessions (next 7 days)
+            try:
+                now_time = timezone.now()
+                week_from_now = now_time + timedelta(days=7)
+                
+                # Safely get active mentorships count
+                active_mentorship_ids = active_mentorships.values_list('id', flat=True)
+                
+                if active_mentorship_ids:
+                    upcoming_sessions_qs = MentorshipSession.objects.filter(
+                        mentorship_id__in=active_mentorship_ids,
+                        status='scheduled',
+                        scheduled_date__gte=now_time,
+                        scheduled_date__lte=week_from_now
+                    ).select_related(
+                        'mentorship',
+                        'mentorship__mentor',
+                        'mentorship__mentee',
+                        'session_template'
+                    ).order_by('scheduled_date')[:5]
+                    
+                    # FIXED: Use the correct serializer
+                    response_data['upcoming_sessions'] = MentorshipSessionSerializer(
+                        upcoming_sessions_qs, many=True
+                    ).data
+                    logger.debug(f"Found {len(response_data['upcoming_sessions'])} upcoming sessions for user {user.id}")
+            except Exception as e:
+                logger.error(f"Error fetching upcoming sessions for user {user.id}: {str(e)}")
+                response_data['upcoming_sessions'] = []
+            
+            # Get recent sessions (last 7 days)
+            try:
+                week_ago = timezone.now() - timedelta(days=7)
+                
+                all_mentorship_ids = all_mentorships.values_list('id', flat=True)
+                
+                if all_mentorship_ids:
+                    recent_sessions_qs = MentorshipSession.objects.filter(
+                        mentorship_id__in=all_mentorship_ids,
+                        status='completed',
+                        actual_date__gte=week_ago
+                    ).select_related(
+                        'mentorship',
+                        'mentorship__mentor',
+                        'mentorship__mentee',
+                        'session_template'
+                    ).order_by('-actual_date')[:5]
+                    
+                    # FIXED: Use the correct serializer
+                    response_data['recent_sessions'] = MentorshipSessionSerializer(
+                        recent_sessions_qs, many=True
+                    ).data
+                    logger.debug(f"Found {len(response_data['recent_sessions'])} recent sessions for user {user.id}")
+            except Exception as e:
+                logger.error(f"Error fetching recent sessions for user {user.id}: {str(e)}")
+                response_data['recent_sessions'] = []
+            
+            # Get mentor performance metrics (for mentors only)
+            if user.role == 'mentor':
+                try:
+                    # Calculate average rating
+                    reviews = MentorshipReview.objects.filter(
+                        mentorship__mentor=user
+                    )
+                    avg_rating = reviews.aggregate(avg=Avg('rating'))['avg'] or 0
+                    
+                    # Calculate completion rate
+                    total_mentorships = all_mentorships.count()
+                    completed_count = completed_mentorships.count()
+                    completion_rate = 0
+                    if total_mentorships > 0:
+                        completion_rate = round((completed_count / total_mentorships) * 100, 1)
+                    
+                    response_data['mentor_performance'] = {
+                        'average_rating': round(avg_rating, 1),
+                        'completion_rate': completion_rate,
+                        'total_reviews': reviews.count(),
+                        'recommendation_rate': reviews.filter(would_recommend=True).count() / max(reviews.count(), 1) * 100 if reviews.count() > 0 else 0
+                    }
+                    logger.debug(f"Mentor performance for user {user.id}: {response_data['mentor_performance']}")
+                except Exception as e:
+                    logger.error(f"Error calculating mentor performance for user {user.id}: {str(e)}")
+                    response_data['mentor_performance'] = {
+                        'average_rating': 0,
+                        'completion_rate': 0,
+                        'total_reviews': 0,
+                        'recommendation_rate': 0
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Error fetching mentorships for user {user.id}: {str(e)}")
+            # Continue with default data
+        
+        logger.info(f"Dashboard data successfully prepared for user {user.id}")
+        return Response(response_data, status=status.HTTP_200_OK)
         
     except Exception as e:
+        logger.exception(f"Unexpected error in get_my_dashboard for user {request.user.id if request.user else 'Anonymous'}")
         return Response({
-            'error': 'Failed to fetch dashboard data',
-            'detail': str(e)
+            'success': False,
+            'error': 'An unexpected error occurred',
+            'detail': str(e),
+            'timestamp': timezone.now().isoformat()
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@ErrorHandler.handle_view_error
 def get_my_upcoming_sessions(request):
     """Get upcoming sessions for the logged-in user"""
     try:
         user = request.user
+        logger.info(f"get_my_upcoming_sessions called by user: {user.id} ({user.role})")
         
-        # Get user's mentorships
-        if user.role == 'mentor':
-            mentorships = Mentorship.objects.filter(mentor=user, status='active')
-        elif user.role == 'mentee':
-            mentorships = Mentorship.objects.filter(mentee=user, status='active')
-        else:
+        # Validate user role
+        if user.role not in ['mentor', 'mentee']:
+            logger.info(f"User {user.id} has role '{user.role}' - returning empty sessions")
             return Response({
                 'success': True,
-                'upcoming_sessions': []
-            })
+                'message': 'Upcoming sessions only available for mentors and mentees',
+                'upcoming_sessions': [],
+                'pagination': {
+                    'page': 1,
+                    'limit': 10,
+                    'total_count': 0,
+                    'total_pages': 0,
+                    'has_next': False,
+                    'has_previous': False
+                },
+                'filters': {
+                    'days_ahead': 30,
+                    'status': 'scheduled'
+                }
+            }, status=status.HTTP_200_OK)
         
-        # Get upcoming sessions
-        upcoming_sessions = MentorshipSession.objects.filter(
-            mentorship__in=mentorships,
-            status='scheduled',
-            scheduled_date__gte=now()
-        ).select_related(
-            'mentorship',
-            'mentorship__mentor',
-            'mentorship__mentee',
-            'session_template'
-        ).order_by('scheduled_date')
+        # Get user's active mentorships
+        try:
+            if user.role == 'mentor':
+                mentorships = Mentorship.objects.filter(mentor=user, status='active')
+                logger.debug(f"Mentor {user.id} has {mentorships.count()} active mentorships")
+            else:
+                mentorships = Mentorship.objects.filter(mentee=user, status='active')
+                logger.debug(f"Mentee {user.id} has {mentorships.count()} active mentorships")
+            
+            mentorship_ids = list(mentorships.values_list('id', flat=True))
+            
+        except Exception as e:
+            logger.error(f"Error fetching active mentorships for user {user.id}: {str(e)}")
+            mentorship_ids = []
         
-        serializer = MentorshipSessionSerializer(upcoming_sessions, many=True)
-        
-        return Response({
+        # Initialize response data
+        response_data = {
             'success': True,
-            'upcoming_sessions': serializer.data
-        })
+            'upcoming_sessions': [],
+            'pagination': {
+                'page': 1,
+                'limit': 10,
+                'total_count': 0,
+                'total_pages': 0,
+                'has_next': False,
+                'has_previous': False
+            },
+            'filters': {
+                'days_ahead': 30,
+                'status': 'scheduled'
+            }
+        }
         
+        if not mentorship_ids:
+            logger.info(f"No active mentorships found for user {user.id}")
+            return Response(response_data, status=status.HTTP_200_OK)
+        
+        # Get upcoming sessions with pagination and filtering
+        try:
+            # Parse query parameters with defaults
+            try:
+                page = int(request.query_params.get('page', 1))
+                limit = int(request.query_params.get('limit', 10))
+                days_ahead = int(request.query_params.get('days_ahead', 30))
+                
+                if page < 1:
+                    page = 1
+                if limit < 1 or limit > 100:
+                    limit = 10
+                if days_ahead < 1 or days_ahead > 365:
+                    days_ahead = 30
+                    
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid parameter values, using defaults: {str(e)}")
+                page = 1
+                limit = 10
+                days_ahead = 30
+            
+            # Calculate date range
+            now_time = timezone.now()
+            future_date = now_time + timedelta(days=days_ahead)
+            
+            # Get upcoming sessions with proper error handling
+            upcoming_sessions_qs = MentorshipSession.objects.filter(
+                mentorship_id__in=mentorship_ids,
+                status='scheduled',
+                scheduled_date__gte=now_time,
+                scheduled_date__lte=future_date
+            ).select_related(
+                'mentorship',
+                'mentorship__mentor',
+                'mentorship__mentee',
+                'session_template'
+            ).order_by('scheduled_date')
+            
+            # Apply pagination
+            total_count = upcoming_sessions_qs.count()
+            offset = (page - 1) * limit
+            sessions_page = upcoming_sessions_qs[offset:offset + limit]
+            
+            # Serialize data
+            serializer = MentorshipSessionSerializer(sessions_page, many=True)
+            
+            logger.debug(f"Found {total_count} upcoming sessions for user {user.id}, returning page {page} with {len(serializer.data)} sessions")
+            
+            response_data = {
+                'success': True,
+                'upcoming_sessions': serializer.data,
+                'pagination': {
+                    'page': page,
+                    'limit': limit,
+                    'total_count': total_count,
+                    'total_pages': (total_count + limit - 1) // limit if limit > 0 else 0,
+                    'has_next': offset + limit < total_count,
+                    'has_previous': page > 1
+                },
+                'filters': {
+                    'days_ahead': days_ahead,
+                    'status': 'scheduled'
+                }
+            }
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error processing upcoming sessions for user {user.id}: {str(e)}")
+            # Return empty response with error flag
+            response_data['success'] = False
+            response_data['error'] = 'Failed to fetch upcoming sessions'
+            response_data['detail'] = str(e)
+            return Response(response_data, status=status.HTTP_200_OK)
+            
     except Exception as e:
+        logger.exception(f"Unexpected error in get_my_upcoming_sessions for user {request.user.id if request.user else 'Anonymous'}")
         return Response({
+            'success': False,
             'error': 'Failed to fetch upcoming sessions',
-            'detail': str(e)
+            'detail': str(e),
+            'timestamp': timezone.now().isoformat()
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
 
 
 
@@ -1927,59 +2156,152 @@ def get_my_active_mentorships(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+@ErrorHandler.handle_view_error
 def get_my_mentorships(request):
     """Get all mentorships for the logged-in user"""
     try:
         user = request.user
+        logger.info(f"get_my_mentorships called by user: {user.id} ({user.role})")
         
-        if user.role == 'mentor':
-            mentorships = Mentorship.objects.filter(mentor=user)
-        elif user.role == 'mentee':
-            mentorships = Mentorship.objects.filter(mentee=user)
-        else:
-            print("Admin user trying to access my mentorships")
-            return Response({
-                'success': True,
-                'message': 'Admin users should use admin endpoints',
-                'mentorships': []
-            })
-        
-        # Apply filters
-        status_filter = request.query_params.get('status')
-        if status_filter:
-            mentorships = mentorships.filter(status=status_filter)
-        
-        department_filter = request.query_params.get('department')
-        if department_filter:
-            mentorships = mentorships.filter(department_id=department_filter)
-        
-        mentorships = mentorships.order_by('-created_at')
-        serializer = UserMentorshipSerializer(
-            mentorships, 
-            many=True,
-            context={'request': request}
-        )
-        print("\n My mentorships: ",serializer.data, "\n")
-        
-        return Response({
+        # Initialize response data
+        response_data = {
             'success': True,
             'user': {
                 'id': user.id,
                 'full_name': user.full_name,
-                'role': user.role
+                'role': user.role,
+                'email': user.email
             },
-            'mentorships': serializer.data
-        })
+            'mentorships': [],
+            'pagination': {
+                'page': 1,
+                'limit': 20,
+                'total_count': 0,
+                'total_pages': 0,
+                'has_next': False,
+                'has_previous': False
+            },
+            'filters': {
+                'status': None,
+                'department': None,
+                'program': None,
+                'order_by': '-created_at'
+            }
+        }
         
+        # Validate user role
+        if user.role not in ['mentor', 'mentee']:
+            logger.info(f"User {user.id} has role '{user.role}' - returning empty mentorships")
+            return Response(response_data, status=status.HTTP_200_OK)
+        
+        # Get user's mentorships with proper filtering
+        try:
+            if user.role == 'mentor':
+                base_queryset = Mentorship.objects.filter(mentor=user)
+            else:
+                base_queryset = Mentorship.objects.filter(mentee=user)
+            
+            filtered_queryset = base_queryset
+            
+            # Status filter
+            status_filter = request.query_params.get('status')
+            if status_filter:
+                valid_statuses = dict(Mentorship.STATUS_CHOICES).keys()
+                if status_filter in valid_statuses:
+                    filtered_queryset = filtered_queryset.filter(status=status_filter)
+                    response_data['filters']['status'] = status_filter
+                else:
+                    logger.warning(f"Invalid status filter '{status_filter}' provided by user {user.id}")
+            
+            # Department filter
+            department_filter = request.query_params.get('department')
+            if department_filter:
+                try:
+                    if department_filter.isdigit():
+                        filtered_queryset = filtered_queryset.filter(department_id=int(department_filter))
+                    else:
+                        filtered_queryset = filtered_queryset.filter(department__name__icontains=department_filter)
+                    response_data['filters']['department'] = department_filter
+                except ValueError:
+                    logger.warning(f"Invalid department filter '{department_filter}' provided by user {user.id}")
+            
+            # Program filter
+            program_filter = request.query_params.get('program')
+            if program_filter:
+                try:
+                    filtered_queryset = filtered_queryset.filter(current_program_id=int(program_filter))
+                    response_data['filters']['program'] = program_filter
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid program filter '{program_filter}' provided by user {user.id}")
+            
+            # Apply ordering
+            order_by = request.query_params.get('order_by', '-created_at')
+            valid_order_fields = ['created_at', '-created_at', 'start_date', '-start_date', 'status']
+            if order_by in valid_order_fields:
+                filtered_queryset = filtered_queryset.order_by(order_by)
+                response_data['filters']['order_by'] = order_by
+            else:
+                filtered_queryset = filtered_queryset.order_by('-created_at')
+            
+            # Pagination
+            try:
+                page = int(request.query_params.get('page', 1))
+                limit = int(request.query_params.get('limit', 20))
+                
+                if page < 1:
+                    page = 1
+                if limit < 1 or limit > 100:
+                    limit = 20
+                    
+            except (ValueError, TypeError):
+                page = 1
+                limit = 20
+            
+            total_count = filtered_queryset.count()
+            offset = (page - 1) * limit
+            
+            # Get paginated data
+            mentorships_page = filtered_queryset[offset:offset + limit]
+            
+            # Serialize with progress calculations
+            serializer = UserMentorshipSerializer(
+                mentorships_page, 
+                many=True,
+                context={'request': request}
+            )
+            
+            logger.debug(f"Found {total_count} mentorships for user {user.id}, returning page {page} with {len(serializer.data)} items")
+            
+            response_data['mentorships'] = serializer.data
+            response_data['pagination'] = {
+                'page': page,
+                'limit': limit,
+                'total_count': total_count,
+                'total_pages': (total_count + limit - 1) // limit if limit > 0 else 0,
+                'has_next': offset + limit < total_count,
+                'has_previous': page > 1
+            }
+            
+            return Response(response_data, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error processing mentorships for user {user.id}: {str(e)}")
+            # Return empty response with error flag
+            response_data['success'] = False
+            response_data['error'] = 'Failed to fetch mentorships'
+            response_data['detail'] = str(e)
+            return Response(response_data, status=status.HTTP_200_OK)
+            
     except Exception as e:
-        print(f"Error in get_my_mentorships: {str(e)}")
+        logger.exception(f"Unexpected error in get_my_mentorships for user {request.user.id if request.user else 'Anonymous'}")
         return Response({
-            'error': 'Failed to fetch your mentorships',
-            'detail': str(e)
+            'success': False,
+            'error': 'Failed to fetch mentorships',
+            'detail': str(e),
+            'timestamp': timezone.now().isoformat()
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
 
-
+        
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -2612,8 +2934,8 @@ def schedule_program_session(request, mentorship_id, program_id):
         # Validate request data
         template_id = request.data.get('template_id')
         scheduled_date = request.data.get('scheduled_date')
-        session_type = request.data.get('session_type', 'video')
-        duration_minutes = request.data.get('duration_minutes', 60)
+        # session_type is not needed here since it comes from the template
+        duration_minutes = request.data.get('duration_minutes')
         agenda = request.data.get('agenda', '')
         meeting_link = request.data.get('meeting_link', '')
         location = request.data.get('location', '')
@@ -2665,6 +2987,10 @@ def schedule_program_session(request, mentorship_id, program_id):
                 'error': 'Cannot schedule session in the past'
             }, status=status.HTTP_400_BAD_REQUEST)
         
+        # Use duration from template if not provided
+        if not duration_minutes:
+            duration_minutes = template.duration_minutes
+        
         # Check for scheduling conflicts
         conflicts = check_scheduling_conflicts(mentorship, scheduled_datetime, duration_minutes)
         if conflicts:
@@ -2699,15 +3025,15 @@ def schedule_program_session(request, mentorship_id, program_id):
             }
         )
         
-        # Create session
+        # Create session - DO NOT pass session_type as it's not a field on MentorshipSession
         session = MentorshipSession.objects.create(
             mentorship=mentorship,
             program=program,
             program_progress=program_progress,
-            session_template=template,
+            session_template=template,  # This sets the session type via template
             program_session_number=program_session_number,
             overall_session_number=overall_session_number,
-            session_type=session_type,
+            # session_type parameter removed - it comes from the template
             scheduled_date=scheduled_datetime,
             duration_minutes=duration_minutes,
             agenda=agenda,
@@ -2725,9 +3051,6 @@ def schedule_program_session(request, mentorship_id, program_id):
             mentorship.current_program = program
             mentorship.save()
         
-        # Send notification to mentee
-        send_session_scheduled_notification(session)
-        
         return Response({
             'success': True,
             'message': 'Session scheduled successfully',
@@ -2736,6 +3059,8 @@ def schedule_program_session(request, mentorship_id, program_id):
         
     except Exception as e:
         print(f"Error scheduling session: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return Response({
             'error': 'Failed to schedule session',
             'detail': str(e)
@@ -2788,7 +3113,6 @@ def check_scheduling_conflicts(mentorship, scheduled_datetime, duration_minutes)
             })
     
     return conflicts
-
 
 def send_session_scheduled_notification(session):
     """Send notification about scheduled session"""

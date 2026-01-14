@@ -1,0 +1,11 @@
+INFO 2026-01-14 18:35:07,302 utils 5796 3316 Processing notification send request
+INFO 2026-01-14 18:35:07,306 views 5796 3316 Sending to all users: 4 users
+INFO 2026-01-14 18:35:07,689 utils 5796 3316 Created notification 5 for p.mugabe@admin_btsl_mentorship.com
+INFO 2026-01-14 18:35:11,054 utils 5796 3316 Email sent to princemugabe568@gmail.com
+INFO 2026-01-14 18:35:11,062 utils 5796 3316 Created notification 6 for p.mugabe@mentee_btsl_mentorship.com
+INFO 2026-01-14 18:35:14,019 utils 5796 3316 Email sent to princemugabe561@gmail.com
+INFO 2026-01-14 18:35:14,027 utils 5796 3316 Created notification 7 for i.iribagiza@mentor_btsl_mentorship.com
+INFO 2026-01-14 18:35:17,089 utils 5796 3316 Email sent to iribagizaisimbi568@gmail.com
+INFO 2026-01-14 18:35:17,102 utils 5796 3316 Created notification 8 for m.prince@mentor_btsl_mentorship.com
+INFO 2026-01-14 18:35:20,133 utils 5796 3316 Email sent to mugemajames2000@gmail.com
+INFO 2026-01-14 18:35:20,272 utils 5796 3316 Notification send completed

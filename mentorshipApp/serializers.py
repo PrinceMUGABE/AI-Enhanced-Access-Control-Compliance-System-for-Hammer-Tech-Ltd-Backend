@@ -319,10 +319,10 @@ class MentorshipSerializer(serializers.ModelSerializer):
             return {
                 'id': next_session.id,
                 'scheduled_date': next_session.scheduled_date,
+             
                 'title': next_session.session_template.title if next_session.session_template else "Session"
             }
         return None
-
 # ==================== USER MENTORSHIP SERIALIZER ====================
 class UserMentorshipSerializer(serializers.ModelSerializer):
     """Simplified serializer for user views"""
@@ -384,30 +384,68 @@ class UserMentorshipSerializer(serializers.ModelSerializer):
 
 
 # ==================== SESSION SERIALIZERS ====================
+# In mentorshipApp/serializers.py
+
 class MentorshipSessionSerializer(serializers.ModelSerializer):
     """Mentorship session serializer"""
     mentorship = MentorshipSerializer(read_only=True)
     session_template = ProgramSessionTemplateSerializer(read_only=True)
-    
-    # Status helpers
+
+    # Derived fields
+    session_type = serializers.SerializerMethodField()
+
+    # ✅ Correct model fields
+    program_session_number = serializers.IntegerField(read_only=True)
+    overall_session_number = serializers.IntegerField(read_only=True)
+
     is_upcoming = serializers.SerializerMethodField()
     is_past_due = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = MentorshipSession
         fields = [
-            'id', 'mentorship', 'session_template', 'session_number',
-            'status', 'scheduled_date', 'actual_date', 'duration_minutes',
-            'agenda', 'objectives', 'notes', 'action_items',
-            'mentor_rating', 'mentor_feedback', 'mentee_feedback',
-            'meeting_link', 'location', 'completed_by', 'created_at',
-            'is_upcoming', 'is_past_due'
+            'id',
+            'mentorship',
+            'session_template',
+
+            # ✅ USE THESE — NOT session_number
+            'program_session_number',
+            'overall_session_number',
+
+            'session_type',
+            'status',
+            'scheduled_date',
+            'actual_date',
+            'duration_minutes',
+            'agenda',
+            'objectives',
+            'notes',
+            'action_items',
+            'mentor_rating',
+            'mentor_feedback',
+            'mentee_feedback',
+            'meeting_link',
+            'location',
+            'completed_by',
+            'created_at',
+            'is_upcoming',
+            'is_past_due',
         ]
-        read_only_fields = ['id', 'created_at', 'completed_by']
-    
+
+        read_only_fields = [
+            'id',
+            'created_at',
+            'completed_by',
+            'program_session_number',
+            'overall_session_number',
+        ]
+
+    def get_session_type(self, obj):
+        return obj.session_template.session_type if obj.session_template else None
+
     def get_is_upcoming(self, obj):
         return obj.is_upcoming()
-    
+
     def get_is_past_due(self, obj):
         return obj.is_past_due()
 
@@ -415,76 +453,43 @@ class SessionCreateSerializer(serializers.Serializer):
     """Serializer for creating sessions"""
     mentorship_id = serializers.IntegerField()
     session_template_id = serializers.IntegerField(required=False)
-    session_number = serializers.IntegerField()
-    session_type = serializers.ChoiceField(
-        choices=ProgramSessionTemplate.SESSION_TYPE,
-        required=False
-    )
+    program_session_number = serializers.IntegerField(required=False)  # Use correct field name
+    
+    # session_type is not needed here since it comes from the template
     scheduled_date = serializers.DateTimeField()
     duration_minutes = serializers.IntegerField(required=False)
     agenda = serializers.CharField(required=False, allow_blank=True)
     meeting_link = serializers.URLField(required=False, allow_blank=True)
     location = serializers.CharField(required=False, allow_blank=True)
     
-    def validate_mentorship_id(self, value):
-        try:
-            mentorship = Mentorship.objects.get(id=value)
-            if not mentorship.can_schedule_session():
-                raise serializers.ValidationError(
-                    "Cannot schedule more sessions for this mentorship"
-                )
-        except Mentorship.DoesNotExist:
-            raise serializers.ValidationError("Mentorship not found")
-        return value
-    
-    def validate_scheduled_date(self, value):
-        if value < now():
-            raise serializers.ValidationError("Cannot schedule session in the past")
-        return value
-    
-    def validate_duration_minutes(self, value):
-        if value < 15:
-            raise serializers.ValidationError("Session must be at least 15 minutes")
-        if value > 240:
-            raise serializers.ValidationError("Session cannot exceed 4 hours")
-        return value
-    
     def validate(self, data):
         """Validate session creation data"""
         mentorship = Mentorship.objects.get(id=data['mentorship_id'])
         
-        # Check if session template belongs to program
-        session_template_id = data.get('session_template_id')
-        if session_template_id:
-            try:
-                template = ProgramSessionTemplate.objects.get(id=session_template_id)
-                if not mentorship.program.session_templates.filter(id=template.id).exists():
-                    raise serializers.ValidationError(
-                        "Session template does not belong to this program"
-                    )
-            except ProgramSessionTemplate.DoesNotExist:
-                raise serializers.ValidationError("Session template not found")
+        # Get session number to use
+        session_number = data.get('program_session_number')
         
-        # Validate session number doesn't exceed total sessions
-        session_number = data.get('session_number')
-        total_sessions = mentorship.program.get_total_sessions()
-        
-        if session_number > total_sessions:
-            raise serializers.ValidationError(
-                f"Session number exceeds total sessions in program ({total_sessions})"
-            )
-        
-        # Check for duplicate session number
-        if MentorshipSession.objects.filter(
-            mentorship=mentorship,
-            session_number=session_number
-        ).exists():
-            raise serializers.ValidationError(
-                f"Session number {session_number} already exists for this mentorship"
-            )
+        if session_number:
+            # Check if session number doesn't exceed total sessions
+            total_sessions = mentorship.current_program.get_total_sessions()
+            
+            if session_number > total_sessions:
+                raise serializers.ValidationError(
+                    f"Session number exceeds total sessions in program ({total_sessions})"
+                )
+            
+            # Check for duplicate session number
+            if MentorshipSession.objects.filter(
+                mentorship=mentorship,
+                program_session_number=session_number,
+                program=mentorship.current_program
+            ).exists():
+                raise serializers.ValidationError(
+                    f"Session number {session_number} already exists for this program"
+                )
         
         return data
-
+    
 
 class SessionCompletionSerializer(serializers.Serializer):
     """Serializer for completing a session"""

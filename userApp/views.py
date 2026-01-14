@@ -1765,3 +1765,68 @@ BTSL Digital Mentorship Team
             "error": "An unexpected error occurred. Please try again.",
             "detail": str(e)
         }, status=500)
+    
+
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import TokenError
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def logout_user(request):
+    """Logout user and blacklist refresh token"""
+    try:
+        print("\n" + "="*50)
+        print("LOGOUT REQUEST")
+        print("="*50)
+        
+        refresh_token = request.data.get('refresh_token')
+        
+        if not refresh_token:
+            print("No refresh token provided")
+            return Response({
+                "message": "Logged out successfully (no token to blacklist)"
+            }, status=200)
+        
+        try:
+            # Blacklist the refresh token
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            print(f"SUCCESS: Token blacklisted for user: {request.user.work_mail_address}")
+        except TokenError as e:
+            print(f"Token error during blacklist: {str(e)}")
+            # Token might already be invalid/blacklisted, but we still log them out
+        
+        print("="*50 + "\n")
+        
+        return Response({
+            "message": "Logged out successfully"
+        }, status=200)
+        
+    except Exception as e:
+        print(f"Error during logout: {str(e)}")
+        print(traceback.format_exc())
+        # Even if there's an error, we return success to ensure user is logged out on frontend
+        return Response({
+            "message": "Logged out successfully"
+        }, status=200)
+
+
+# Add this endpoint to verify token validity
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def verify_token(request):
+    """Verify if the current access token is valid"""
+    try:
+        user = request.user
+        serializer = CustomUserSerializer(user)
+        
+        return Response({
+            "valid": True,
+            "user": serializer.data
+        }, status=200)
+        
+    except Exception as e:
+        return Response({
+            "valid": False,
+            "error": str(e)
+        }, status=401)
