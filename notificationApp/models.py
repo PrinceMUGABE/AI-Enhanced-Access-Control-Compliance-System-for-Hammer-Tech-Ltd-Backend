@@ -1,8 +1,27 @@
+# notificationApp/models.py - FIXED
+
 from django.db import models
 from django.utils.timezone import now
 from userApp.models import CustomUser
 from mentorshipApp.models import Mentorship
 from chatApp.models import ChatRoom
+
+
+class UserNotificationManager(models.Manager):
+    """Custom manager for user notifications"""
+    
+    def get_user_notifications(self, user, include_archived=False):
+        """Get notifications for a specific user"""
+        queryset = self.filter(recipient=user)
+        
+        if not include_archived:
+            queryset = queryset.filter(is_archived=False)
+        
+        return queryset
+    
+    def get_unread_count(self, user):
+        """Get count of unread notifications for a user"""
+        return self.filter(recipient=user, is_read=False, is_archived=False).count()
 
 
 class ChatNotification(models.Model):
@@ -17,6 +36,13 @@ class ChatNotification(models.Model):
         ('participant_added', 'Participant Added'),
         ('participant_removed', 'Participant Removed'),
         ('chat_archived', 'Chat Archived'),
+        ('session_scheduled', 'Session Scheduled'),
+        ('session_completed', 'Session Completed'),
+        ('session_cancelled', 'Session Cancelled'),
+        ('session_rescheduled', 'Session Rescheduled'),
+        ('session_reminder', 'Session Reminder'),
+        ('program_completed', 'Program Completed'),
+        ('mentorship_completed', 'Mentorship Completed'),
     ]
     
     recipient = models.ForeignKey(
@@ -26,27 +52,38 @@ class ChatNotification(models.Model):
     )
     sender = models.ForeignKey(
         CustomUser,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         related_name='sent_chat_notifications',
         null=True,
         blank=True
     )
     chat_room = models.ForeignKey(
         ChatRoom,
-        on_delete=models.CASCADE,
+        on_delete=models.SET_NULL,
         related_name='notifications',
         null=True,
         blank=True
     )
-
-    notification_type = models.CharField(max_length=20, choices=NOTIFICATION_TYPES)
+    mentorship = models.ForeignKey(
+        Mentorship,
+        on_delete=models.SET_NULL,
+        related_name='notifications',
+        null=True,
+        blank=True
+    )
+    
+    notification_type = models.CharField(max_length=50, choices=NOTIFICATION_TYPES)
     title = models.CharField(max_length=200)
     message = models.TextField()
+    metadata = models.JSONField(default=dict, blank=True, null=True)
     is_read = models.BooleanField(default=False)
     is_archived = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=now)
     read_at = models.DateTimeField(null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
+    
+    # Set the custom manager CORRECTLY
+    objects = UserNotificationManager()
     
     class Meta:
         ordering = ['-created_at']
@@ -56,6 +93,7 @@ class ChatNotification(models.Model):
             models.Index(fields=['recipient', 'is_read']),
             models.Index(fields=['created_at']),
             models.Index(fields=['notification_type']),
+            models.Index(fields=['is_archived']),
         ]
     
     def __str__(self):
@@ -74,6 +112,12 @@ class ChatNotification(models.Model):
             self.is_archived = True
             self.archived_at = now()
             self.save()
+    
+    def delete_notification(self):
+        """Soft delete notification"""
+        self.is_archived = True
+        self.archived_at = now()
+        self.save()
 
 
 class SystemNotification(models.Model):
@@ -129,6 +173,11 @@ class SystemNotification(models.Model):
             return False
         
         return True
+    
+    def soft_delete(self):
+        """Soft delete system notification"""
+        self.is_active = False
+        self.save()
 
 
 class UserNotificationPreference(models.Model):

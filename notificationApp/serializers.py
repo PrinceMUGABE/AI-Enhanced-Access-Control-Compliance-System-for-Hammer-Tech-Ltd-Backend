@@ -1,3 +1,5 @@
+# notificationApp/serializers.py - UPDATED
+
 from rest_framework import serializers
 from .models import (
     ChatNotification, SystemNotification,
@@ -6,12 +8,74 @@ from .models import (
 from userApp.models import CustomUser
 
 
+class UserDepartmentSerializer(serializers.Serializer):
+    """Serializer for user departments"""
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    status = serializers.CharField()
+
 class UserBasicSerializer(serializers.ModelSerializer):
-    """Basic user info for notifications"""
+    """Basic user info"""
+    department = serializers.SerializerMethodField()
+    
     class Meta:
         model = CustomUser
-        fields = ['id', 'full_name', 'role', 'department']
+        fields = [
+            'id', 'full_name', 'email', 'phone_number', 
+            'work_mail_address', 'role', 'department', 
+            'status', 'availability_status'
+        ]
         read_only_fields = fields
+    
+    def get_department(self, obj):
+        if obj.department:
+            return {
+                'id': obj.department.id,
+                'name': obj.department.name
+            }
+        return None
+
+
+class UserProfileSerializer(serializers.ModelSerializer):
+    """Serializer for user profile information"""
+    departments = UserDepartmentSerializer(many=True, read_only=True)
+    single_department = UserDepartmentSerializer(source='department', read_only=True)
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'id', 'phone_number', 'email', 'work_mail_address',
+            'full_name', 'role', 'department', 'departments',
+            'single_department', 'status', 'availability_status',
+            'created_at'
+        ]
+        read_only_fields = fields
+
+
+class ChatNotificationSerializer(serializers.ModelSerializer):
+    """Serializer for chat notifications"""
+    sender = UserProfileSerializer(read_only=True)
+    recipient = UserProfileSerializer(read_only=True)
+    
+    class Meta:
+        model = ChatNotification
+        fields = [
+            'id', 'recipient', 'sender', 'notification_type', 
+            'title', 'message', 'metadata', 'is_read', 'is_archived',
+            'created_at', 'read_at', 'archived_at'
+        ]
+        read_only_fields = fields
+
+
+class DeleteNotificationsSerializer(serializers.Serializer):
+    """Serializer for deleting notifications"""
+    notification_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=True
+    )
+    delete_all = serializers.BooleanField(default=False)
+    delete_all_read = serializers.BooleanField(default=False)
+    delete_all_archived = serializers.BooleanField(default=False)
 
 
 class ChatNotificationSerializer(serializers.ModelSerializer):

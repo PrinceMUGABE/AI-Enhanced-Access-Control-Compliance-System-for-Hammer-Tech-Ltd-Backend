@@ -210,6 +210,7 @@ def send_human_response(request):
     try:
         user = request.user
         if user.role not in ['admin', 'hr']:
+            print('Usernot authorized')
             return Response({
                 'error': 'Only admin or HR can send human responses'
             }, status=status.HTTP_403_FORBIDDEN)
@@ -218,6 +219,7 @@ def send_human_response(request):
         response = request.data.get('response', '').strip()
         
         if not session_id or not response:
+            print('session ID and response are required')
             return Response({
                 'error': 'session_id and response are required'
             }, status=status.HTTP_400_BAD_REQUEST)
@@ -226,6 +228,7 @@ def send_human_response(request):
         
         # Check if chat is escalated
         if chat_session.status != 'escalated':
+            print('Chat must be escalated first')
             return Response({
                 'error': 'Chat must be escalated first'
             }, status=status.HTTP_400_BAD_REQUEST)
@@ -249,7 +252,7 @@ def send_human_response(request):
             })
         
     except Exception as e:
-        logger.error(f"Send human response error: {e}")
+        print(f"Send human response error: {e}")
         return Response({
             'error': 'Failed to send response'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -621,7 +624,7 @@ def resolve_chat(request, chat_id):
     """
     try:
         user = request.user
-        if user.role not in ['admin', 'hr']:
+        if user.role not in ['admin', 'hr', 'mentor', 'mentee']:
             return Response({'error': 'Access denied'}, status=403)
         
         chat = get_object_or_404(AssistanceChat, id=chat_id)

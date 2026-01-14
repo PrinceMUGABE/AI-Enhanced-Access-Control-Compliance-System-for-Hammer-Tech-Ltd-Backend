@@ -1900,6 +1900,7 @@ def get_my_active_mentorships(request):
         elif user.role == 'mentee':
             mentorships = Mentorship.objects.filter(mentee=user, status='active')
         else:
+            
             return Response({
                 'success': True,
                 'active_mentorships': []

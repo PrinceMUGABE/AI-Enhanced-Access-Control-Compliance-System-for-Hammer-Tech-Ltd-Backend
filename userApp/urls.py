@@ -37,4 +37,5 @@ urlpatterns = [
     path('auth/password-reset/request-otp/', views.request_password_reset_otp, name='request-password-reset-otp'),
     path('auth/password-reset/verify-otp/', views.verify_reset_otp, name='verify-reset-otp'),
     path('auth/password-reset/confirm/', views.reset_password_with_otp, name='reset-password-with-otp'),
+    path('profile/change-password/', views.change_password, name='profile-change-password'),
 ]

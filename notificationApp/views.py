@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.shortcuts import render
 from django.forms import ValidationError
 from rest_framework import status
@@ -18,6 +19,7 @@ from .serializers import (
     UserNotificationPreferenceSerializer, NotificationLogSerializer,
     CreateSystemNotificationSerializer, MarkNotificationsReadSerializer
 )
+from userApp.models import CustomUser
 
 
 # ==================== CHAT NOTIFICATION VIEWS ====================
@@ -1037,5 +1039,505 @@ def get_notification_dashboard(request):
         return Response({
             'success': False,
             'error': 'Failed to load notification dashboard',
+            'detail': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
+
+
+# notificationApp/views.py - UPDATED
+
+from django.shortcuts import render
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+from django.db.models import Q, Count
+from django.utils.timezone import now
+from datetime import datetime
+
+from .models import (
+    ChatNotification, SystemNotification,
+    UserNotificationPreference, NotificationLog
+)
+from .serializers import (
+    ChatNotificationSerializer, SystemNotificationSerializer,
+    UserNotificationPreferenceSerializer, NotificationLogSerializer,
+    CreateSystemNotificationSerializer, MarkNotificationsReadSerializer,
+    DeleteNotificationsSerializer, UserProfileSerializer
+)
+
+
+# ==================== PROFILE VIEWS ====================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_user_profile(request):
+    """Get current user's profile information"""
+    try:
+        user = request.user
+        serializer = UserProfileSerializer(user)
+        
+        # Determine what department information to show
+        department_info = None
+        if user.role == 'mentee' and user.department:
+            department_info = {
+                'type': 'single',
+                'department': {
+                    'id': user.department.id,
+                    'name': user.department.name,
+                    'status': user.department.status
+                }
+            }
+        elif user.role == 'mentor' and user.departments.exists():
+            departments = user.departments.all()
+            department_info = {
+                'type': 'multiple',
+                'departments': [
+                    {
+                        'id': dept.id,
+                        'name': dept.name,
+                        'status': dept.status
+                    }
+                    for dept in departments
+                ]
+            }
+        elif user.role in ['admin', 'hr']:
+            department_info = {
+                'type': 'none',
+                'message': 'Admin/HR users are not assigned to specific departments'
+            }
+        
+        profile_data = serializer.data
+        profile_data['department_info'] = department_info
+        
+        return Response({
+            'success': True,
+            'profile': profile_data
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': 'Failed to fetch profile',
+            'detail': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['PUT', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def update_user_profile(request):
+    """Update user profile (limited fields)"""
+    try:
+        user = request.user
+        
+        # Fields that can be updated by user
+        allowed_fields = ['phone_number', 'email', 'full_name', 'availability_status']
+        
+        # Prevent role and department changes
+        if 'role' in request.data:
+            return Response({
+                'success': False,
+                'error': 'Role cannot be changed'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if 'department' in request.data or 'departments' in request.data:
+            return Response({
+                'success': False,
+                'error': 'Department(s) cannot be changed by user. Contact admin/HR.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Prevent work mail address changes
+        if 'work_mail_address' in request.data:
+            return Response({
+                'success': False,
+                'error': 'Work email address cannot be changed'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate email if provided
+        if 'email' in request.data:
+            from django.core.validators import validate_email
+            try:
+                validate_email(request.data['email'])
+                # Check for duplicate email
+                if CustomUser.objects.filter(email=request.data['email']).exclude(id=user.id).exists():
+                    return Response({
+                        'success': False,
+                        'error': 'Email already exists'
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            except:
+                return Response({
+                    'success': False,
+                    'error': 'Invalid email format'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate phone if provided
+        if 'phone_number' in request.data:
+            # Check for duplicate phone
+            if CustomUser.objects.filter(phone_number=request.data['phone_number']).exclude(id=user.id).exists():
+                return Response({
+                    'success': False,
+                    'error': 'Phone number already exists'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update allowed fields
+        for field in allowed_fields:
+            if field in request.data:
+                setattr(user, field, request.data[field])
+        
+        user.save()
+        
+        serializer = UserProfileSerializer(user)
+        
+        return Response({
+            'success': True,
+            'message': 'Profile updated successfully',
+            'profile': serializer.data
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': 'Failed to update profile',
+            'detail': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ==================== NOTIFICATION MANAGEMENT VIEWS ====================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_user_notifications(request):
+    """List all notifications for the authenticated user - FIXED VERSION"""
+    try:
+        user = request.user
+        
+        # Get query parameters
+        notification_type = request.query_params.get('type')
+        is_read = request.query_params.get('is_read')
+        is_archived = request.query_params.get('is_archived', 'false').lower() == 'true'
+        
+        # Base queryset - user can only see their own notifications
+        notifications = ChatNotification.objects.filter(recipient=user)
+        
+        # Admin/HR can see all notifications
+        if user.role in ['admin', 'hr']:
+            notifications = ChatNotification.objects.all()
+        
+        # Apply filters
+        if notification_type:
+            notifications = notifications.filter(notification_type=notification_type)
+        
+        if is_read:
+            is_read_bool = is_read.lower() == 'true'
+            notifications = notifications.filter(is_read=is_read_bool)
+        
+        # By default, don't show archived notifications
+        if not is_archived:
+            notifications = notifications.filter(is_archived=False)
+        
+        # Apply ordering
+        notifications = notifications.order_by('-created_at')
+        
+        # Pagination - SAVE THE ORIGINAL QUERYSET BEFORE SLICING
+        limit = request.query_params.get('limit', 20)
+        try:
+            limit = int(limit)
+            if limit > 100:
+                limit = 100
+        except (ValueError, TypeError):
+            limit = 20
+        
+        # Get the sliced queryset for response
+        sliced_notifications = notifications[:limit]
+        
+        # Get counts FROM THE ORIGINAL QUERYSET (not the sliced one)
+        total_count = notifications.count()
+        unread_count = notifications.filter(is_read=False).count()
+        
+        # For archived count, we need the full queryset without is_archived filter
+        if user.role in ['admin', 'hr']:
+            archived_count = ChatNotification.objects.filter(is_archived=True).count()
+        else:
+            archived_count = ChatNotification.objects.filter(recipient=user, is_archived=True).count()
+        
+        serializer = ChatNotificationSerializer(sliced_notifications, many=True)
+        
+        return Response({
+            'success': True,
+            'count': len(sliced_notifications),  # Use len() for sliced queryset
+            'total_count': total_count,
+            'unread_count': unread_count,
+            'archived_count': archived_count,
+            'notifications': serializer.data
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"ERROR in list_user_notifications: {str(e)}")
+        print(f"Traceback: {error_trace}")
+        
+        return Response({
+            'success': False,
+            'error': 'Failed to fetch notifications',
+            'detail': str(e),
+            'traceback': error_trace if settings.DEBUG else None
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)   
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_notifications(request):
+    """Delete notifications (soft delete by archiving)"""
+    try:
+        user = request.user
+        serializer = DeleteNotificationsSerializer(data=request.data)
+        
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'error': 'Invalid data',
+                'details': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        data = serializer.validated_data
+        notification_ids = data.get('notification_ids', [])
+        delete_all = data.get('delete_all', False)
+        delete_all_read = data.get('delete_all_read', False)
+        delete_all_archived = data.get('delete_all_archived', False)
+        
+        deleted_count = 0
+        
+        if delete_all:
+            # Delete all notifications (admin/HR can delete all, others only their own)
+            if user.role in ['admin', 'hr']:
+                deleted_count = ChatNotification.objects.filter(is_archived=False).count()
+                ChatNotification.objects.filter(is_archived=False).update(
+                    is_archived=True,
+                    archived_at=now()
+                )
+            else:
+                deleted_count = ChatNotification.objects.filter(recipient=user, is_archived=False).count()
+                ChatNotification.objects.filter(recipient=user, is_archived=False).update(
+                    is_archived=True,
+                    archived_at=now()
+                )
+        
+        elif delete_all_read:
+            # Delete all read notifications
+            if user.role in ['admin', 'hr']:
+                deleted_count = ChatNotification.objects.filter(is_read=True, is_archived=False).count()
+                ChatNotification.objects.filter(is_read=True, is_archived=False).update(
+                    is_archived=True,
+                    archived_at=now()
+                )
+            else:
+                deleted_count = ChatNotification.objects.filter(recipient=user, is_read=True, is_archived=False).count()
+                ChatNotification.objects.filter(recipient=user, is_read=True, is_archived=False).update(
+                    is_archived=True,
+                    archived_at=now()
+                )
+        
+        elif delete_all_archived:
+            # Permanently delete archived notifications (admin/HR only)
+            if user.role not in ['admin', 'hr']:
+                return Response({
+                    'success': False,
+                    'error': 'Only admin and HR can permanently delete archived notifications'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            deleted_count = ChatNotification.objects.filter(is_archived=True).count()
+            ChatNotification.objects.filter(is_archived=True).delete()
+        
+        elif notification_ids:
+            # Delete specific notifications
+            for notification_id in notification_ids:
+                try:
+                    notification = ChatNotification.objects.get(id=notification_id)
+                    
+                    # Check permissions
+                    if user.role not in ['admin', 'hr'] and notification.recipient != user:
+                        continue
+                    
+                    if not notification.is_archived:
+                        notification.delete_notification()
+                        deleted_count += 1
+                except ChatNotification.DoesNotExist:
+                    continue
+        
+        else:
+            return Response({
+                'success': False,
+                'error': 'No operation specified'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            'success': True,
+            'message': f'Deleted {deleted_count} notifications',
+            'count': deleted_count
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': 'Failed to delete notifications',
+            'detail': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def mark_notification_read(request, notification_id):
+    """Mark a specific notification as read"""
+    try:
+        user = request.user
+        
+        notification = get_object_or_404(ChatNotification, id=notification_id)
+        
+        # Check permissions
+        if user.role not in ['admin', 'hr'] and notification.recipient != user:
+            return Response({
+                'success': False,
+                'error': 'You can only mark your own notifications as read'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        if notification.is_read:
+            return Response({
+                'success': True,
+                'message': 'Notification is already read'
+            }, status=status.HTTP_200_OK)
+        
+        notification.mark_as_read()
+        
+        return Response({
+            'success': True,
+            'message': 'Notification marked as read',
+            'notification_id': notification_id
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': 'Failed to mark notification as read',
+            'detail': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def mark_all_notifications_read(request):
+    """Mark all notifications as read"""
+    try:
+        user = request.user
+        
+        if user.role in ['admin', 'hr']:
+            # Admin/HR can mark all notifications as read
+            updated_count = ChatNotification.objects.filter(
+                is_read=False,
+                is_archived=False
+            ).update(
+                is_read=True,
+                read_at=now()
+            )
+        else:
+            # Regular users can only mark their own notifications as read
+            updated_count = ChatNotification.objects.filter(
+                recipient=user,
+                is_read=False,
+                is_archived=False
+            ).update(
+                is_read=True,
+                read_at=now()
+            )
+        
+        return Response({
+            'success': True,
+            'message': f'Marked {updated_count} notifications as read',
+            'count': updated_count
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': 'Failed to mark notifications as read',
+            'detail': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+
+
+
+from django.contrib.auth.hashers import check_password, make_password
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_password(request):
+    """Change user password"""
+    try:
+        user = request.user
+        
+        # Validate required fields
+        current_password = request.data.get('current_password')
+        new_password = request.data.get('new_password')
+        confirm_password = request.data.get('confirm_password')
+        
+        if not current_password or not new_password or not confirm_password:
+            return Response({
+                'success': False,
+                'error': 'All password fields are required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Verify current password
+        if not check_password(current_password, user.password):
+            return Response({
+                'success': False,
+                'error': 'Current password is incorrect'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validate new password
+        if new_password != confirm_password:
+            return Response({
+                'success': False,
+                'error': 'New passwords do not match'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if len(new_password) < 8:
+            return Response({
+                'success': False,
+                'error': 'Password must be at least 8 characters long'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Check if new password is same as old
+        if check_password(new_password, user.password):
+            return Response({
+                'success': False,
+                'error': 'New password cannot be the same as current password'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Update password
+        user.set_password(new_password)
+        user.save()
+        
+        # Log the password change
+        NotificationLog.objects.create(
+            recipient=user,
+            notification_type='password_changed',
+            title='Password Changed',
+            message='User changed their password',
+            sent_via=['system'],
+            success=True
+        )
+        
+        return Response({
+            'success': True,
+            'message': 'Password changed successfully'
+        }, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': 'Failed to change password',
             'detail': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -15,7 +15,11 @@ SECRET_KEY = 'django-insecure-*b^p3kh7jlfq=zl%(_b!(8u*fr6be$&gypdd*ycdups-(lu@6+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    'localhost:5173',
+]
 
 
 # Application definition
@@ -44,6 +48,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -51,8 +56,8 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
 ]
+
 
 
 ROOT_URLCONF = 'backend.urls'
@@ -136,14 +141,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 
-
-# Configure DRF to use Simple JWT
-REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ),
-}
-
 # Simple JWT settings (optional, you can adjust expiration, etc.)
 from datetime import timedelta
 
@@ -156,14 +153,7 @@ SIMPLE_JWT = {
 }
 
 
-REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ],
-    'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
-    ],
-}
+
 
 # In settings.py
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Ensure database-backed sessions
@@ -271,7 +261,7 @@ CACHES["assistance"] = {
     }
 }
 
-# Rate limiting for assistance app
+# Merge all REST_FRAMEWORK settings into one
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
@@ -284,9 +274,9 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '50/hour',
-        'user': '200/hour',
-        'assistance_anon': '20/hour',  # Specific for assistance
+        'anon': '100/day',
+        'user': '1000/day',
+        'assistance_anon': '20/hour',
         'assistance_user': '100/hour',
     }
 }
@@ -329,3 +319,5 @@ LOGGING = {
 # Create logs directory if it doesn't exist
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
+
+CORS_EXPOSE_HEADERS = ['Content-Type', 'Authorization']

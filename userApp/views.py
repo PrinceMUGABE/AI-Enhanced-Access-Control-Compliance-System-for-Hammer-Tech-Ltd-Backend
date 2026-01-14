@@ -1663,3 +1663,105 @@ def get_my_departments(request):
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+    
+
+
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def change_password(request):
+    """Change password for logged-in user with current password verification"""
+    try:
+        logger.info("\n" + "="*50)
+        logger.info("PASSWORD CHANGE REQUEST")
+        logger.info("="*50)
+        
+        user = request.user
+        current_password = request.data.get('current_password', '').strip()
+        new_password = request.data.get('new_password', '').strip()
+        confirm_password = request.data.get('confirm_password', '').strip()
+        
+        # Validate required fields
+        if not current_password:
+            error_msg = "Current password is required."
+            logger.error(f"ERROR: {error_msg}")
+            return Response({"error": error_msg}, status=400)
+        
+        if not new_password:
+            error_msg = "New password is required."
+            logger.error(f"ERROR: {error_msg}")
+            return Response({"error": error_msg}, status=400)
+        
+        if not confirm_password:
+            error_msg = "Password confirmation is required."
+            logger.error(f"ERROR: {error_msg}")
+            return Response({"error": error_msg}, status=400)
+        
+        # Verify current password
+        if not user.check_password(current_password):
+            error_msg = "Current password is incorrect."
+            logger.error(f"ERROR: {error_msg}")
+            return Response({"error": error_msg}, status=400)
+        
+        # Check if new password is same as current
+        if user.check_password(new_password):
+            error_msg = "New password cannot be the same as current password."
+            logger.error(f"ERROR: {error_msg}")
+            return Response({"error": error_msg}, status=400)
+        
+        # Check password match
+        if new_password != confirm_password:
+            error_msg = "New passwords do not match."
+            logger.error(f"ERROR: {error_msg}")
+            return Response({"error": error_msg}, status=400)
+        
+        # Validate password strength
+        password_error = is_valid_password(new_password)
+        if password_error:
+            logger.error(f"ERROR: {password_error}")
+            return Response({"error": password_error}, status=400)
+        
+        # Update password
+        user.set_password(new_password)
+        user.save()
+        
+        logger.info(f"SUCCESS: Password changed for user: {user.work_mail_address}")
+        
+        # Send notification email
+        try:
+            send_mail(
+                subject="Password Changed Successfully - BTSL Mentorship",
+                message=f"""
+Hello {user.full_name},
+
+Your password has been successfully changed for the BTSL Digital Mentorship System.
+
+If you did not make this change, please contact our support team immediately.
+
+Best regards,
+BTSL Digital Mentorship Team
+                """,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+            logger.info(f"SUCCESS: Notification email sent to {user.email}")
+        except Exception as e:
+            logger.warning(f"WARNING: Password changed but email failed: {str(e)}")
+        
+        logger.info("="*50 + "\n")
+        
+        return Response({
+            "message": "Password changed successfully.",
+            "success": True
+        }, status=200)
+        
+    except Exception as e:
+        error_msg = f"Unexpected error during password change: {str(e)}"
+        logger.error(f"CRITICAL ERROR: {error_msg}")
+        logger.error(traceback.format_exc())
+        return Response({
+            "error": "An unexpected error occurred. Please try again.",
+            "detail": str(e)
+        }, status=500)
