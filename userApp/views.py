@@ -120,295 +120,301 @@ def generate_secure_password():
 def register_user(request):
     
     try:
-        print(f"\n{'='*50}")
-        print(f"REGISTRATION REQUEST RECEIVED")
-        print(f"{'='*50}")
-        print(f"Submitted data: {request.data}\n")
-        
-        # Extract data
-        phone_number = request.data.get('phone_number', '').strip()
-        email = request.data.get('email', '').strip()
-        full_name = request.data.get('full_name', '').strip()
-        department = request.data.get('department', '').strip() or None
-        departments = request.data.get('departments', [])  # For mentors
-        role = request.data.get('role', 'mentee').strip().lower()
-        requesting_user = request.user if request.user.is_authenticated else None
-        
-        # Validate required fields
-        if not phone_number:
-            error_msg = "Phone number is required."
-            print(f"ERROR: {error_msg}")
-            return Response({"error": error_msg}, status=400)
-        
-        if not email:
-            error_msg = "Email address is required."
-            print(f"ERROR: {error_msg}")
-            return Response({"error": error_msg}, status=400)
-        
-        if not full_name:
-            error_msg = "Full name is required."
-            print(f"ERROR: {error_msg}")
-            return Response({"error": error_msg}, status=400)
-        
-        # Validate phone number format
-        phone_error = is_valid_phone(phone_number)
-        if phone_error:
-            print(f"ERROR: {phone_error}")
-            return Response({"error": phone_error}, status=400)
-        
-        # Validate email format
-        email_error = is_valid_email(email)
-        if email_error:
-            print(f"ERROR: {email_error}")
-            return Response({"error": email_error}, status=400)
-        
-        # Check role-based permissions
-        if role not in ['admin', 'mentor', 'mentee', 'hr']:
-            error_msg = f"Invalid role '{role}'. Must be one of: admin, mentor, mentee, hr"
-            print(f"ERROR: {error_msg}")
-            return Response({"error": error_msg}, status=400)
-        
-        # Department validation based on role
-        if role == 'mentee':
-            if not department:
-                error_msg = "Department is required for mentee users."
+            print(f"\n{'='*50}")
+            print(f"REGISTRATION REQUEST RECEIVED")
+            print(f"{'='*50}")
+            print(f"Submitted data: {request.data}\n")
+            
+            # Extract data
+            phone_number = request.data.get('phone_number', '').strip()
+            email = request.data.get('email', '').strip()
+            full_name = request.data.get('full_name', '').strip()
+            department = request.data.get('department', 0)
+            departments = request.data.get('departments', [])  # For mentors
+            role = request.data.get('role', 'mentee').strip().lower()
+            requesting_user = request.user if request.user.is_authenticated else None
+            
+            # Validate required fields
+            if not phone_number:
+                error_msg = "Phone number is required."
                 print(f"ERROR: {error_msg}")
                 return Response({"error": error_msg}, status=400)
             
-            # Validate department exists and is active
-            try:
-                dept_obj = Department.objects.get(id=department, status='active')
-            except Department.DoesNotExist:
-                error_msg = "Invalid or inactive department selected."
-                print(f"ERROR: {error_msg}")
-                return Response({"error": error_msg}, status=400)
-        
-        elif role == 'mentor':
-            if not departments or len(departments) == 0:
-                error_msg = "At least one department is required for mentor users."
+            if not email:
+                error_msg = "Email address is required."
                 print(f"ERROR: {error_msg}")
                 return Response({"error": error_msg}, status=400)
             
-            # Validate all departments exist and are active
-            valid_depts = Department.objects.filter(id__in=departments, status='active')
-            if valid_depts.count() != len(departments):
-                error_msg = "One or more selected departments are invalid or inactive."
-                print(f"ERROR: {error_msg}")
-                return Response({"error": error_msg}, status=400)
-        
-        elif role in ['admin', 'hr']:
-            # Admin and HR don't require departments
-            department = None
-            departments = []
-        
-        # Role-based permission checks
-        if role != 'mentee' and not requesting_user:
-            error_msg = "Only admin or HR can create users with roles other than 'mentee'."
-            print(f"ERROR: {error_msg}")
-            return Response({"error": error_msg}, status=400)
-        
-        if requesting_user:
-            if role == 'admin' and not requesting_user.is_admin:
-                error_msg = "Only admin can create admin users."
-                print(f"ERROR: {error_msg}")
-                return Response({"error": error_msg}, status=403)
-            if role == 'hr' and not requesting_user.is_admin:
-                error_msg = "Only admin can create HR users."
-                print(f"ERROR: {error_msg}")
-                return Response({"error": error_msg}, status=403)
-            if role == 'mentor' and not (requesting_user.is_admin or requesting_user.is_hr):
-                error_msg = "Only admin or HR can create mentor users."
-                print(f"ERROR: {error_msg}")
-                return Response({"error": error_msg}, status=403)
-        
-        # Check for existing users
-        if CustomUser.objects.filter(phone_number=phone_number).exists():
-            error_msg = "A user with this phone number already exists."
-            print(f"ERROR: {error_msg}")
-            return Response({"error": error_msg}, status=400)
-        
-        if CustomUser.objects.filter(email=email).exists():
-            error_msg = "A user with this email already exists."
-            print(f"ERROR: {error_msg}")
-            return Response({"error": error_msg}, status=400)
-        
-        # Handle password
-        if requesting_user:
-            password = generate_secure_password()
-            if not password:
-                error_msg = "Failed to generate secure password. Please try again."
-                print(f"ERROR: {error_msg}")
-                return Response({"error": error_msg}, status=500)
-        else:
-            password = request.data.get('password', '').strip()
-            confirm_password = request.data.get('confirm_password', '').strip()
-            
-            if not password:
-                error_msg = "Password is required."
+            if not full_name:
+                error_msg = "Full name is required."
                 print(f"ERROR: {error_msg}")
                 return Response({"error": error_msg}, status=400)
             
-            if not confirm_password:
-                error_msg = "Password confirmation is required."
+            # Validate phone number format
+            phone_error = is_valid_phone(phone_number)
+            if phone_error:
+                print(f"ERROR: {phone_error}")
+                return Response({"error": phone_error}, status=400)
+            
+            # Validate email format
+            email_error = is_valid_email(email)
+            if email_error:
+                print(f"ERROR: {email_error}")
+                return Response({"error": email_error}, status=400)
+            
+            # Check role-based permissions
+            if role not in ['admin', 'mentor', 'mentee', 'hr']:
+                error_msg = f"Invalid role '{role}'. Must be one of: admin, mentor, mentee, hr"
                 print(f"ERROR: {error_msg}")
                 return Response({"error": error_msg}, status=400)
             
-            if password != confirm_password:
-                error_msg = "Passwords do not match."
-                print(f"ERROR: {error_msg}")
-                return Response({"error": error_msg}, status=400)
-            
-            password_error = is_valid_password(password)
-            if password_error:
-                print(f"ERROR: {password_error}")
-                return Response({"error": password_error}, status=400)
-        
-        # Generate work mail address
-        try:
-            work_mail_address = CustomUser.objects.generate_work_mail(full_name, role)
-            print(f"Generated work email: {work_mail_address}")
-        except Exception as e:
-            error_msg = f"Failed to generate work email address: {str(e)}"
-            print(f"ERROR: {error_msg}")
-            print(traceback.format_exc())
-            return Response({"error": "Failed to generate work email address. Please try again."}, status=500)
-        
-        # Create user with proper parameters based on role
-        try:
+            # Department validation based on role
             if role == 'mentee':
-                user = CustomUser.objects.create_user(
-                    phone_number=phone_number,
-                    email=email,
-                    full_name=full_name,
-                    department=department,  # Pass department ID for mentee
-                    departments=None,
-                    role=role,
-                    work_mail_address=work_mail_address,
-                    password=password,
-                    created_by=requesting_user,
-                    status='approved' if requesting_user else 'pending',
-                    availability_status='active' if requesting_user else 'inactive'
-                )
-            elif role == 'mentor':
-                user = CustomUser.objects.create_user(
-                    phone_number=phone_number,
-                    email=email,
-                    full_name=full_name,
-                    department=None,
-                    departments=departments,  # Pass departments list for mentor
-                    role=role,
-                    work_mail_address=work_mail_address,
-                    password=password,
-                    created_by=requesting_user,
-                    status='approved' if requesting_user else 'pending',
-                    availability_status='active' if requesting_user else 'inactive'
-                )
-            else:  # admin or hr
-                user = CustomUser.objects.create_user(
-                    phone_number=phone_number,
-                    email=email,
-                    full_name=full_name,
-                    department=None,
-                    departments=None,
-                    role=role,
-                    work_mail_address=work_mail_address,
-                    password=password,
-                    created_by=requesting_user,
-                    status='approved' if requesting_user else 'pending',
-                    availability_status='active' if requesting_user else 'inactive'
-                )
-            
-            print(f"SUCCESS: User created with ID: {user.id}")
-            print(f"User details: {user.full_name} - {user.work_mail_address}")
-            
-            if role == 'mentor':
-                print(f"Mentor departments: {[d.name for d in user.departments.all()]}")
+                if not department:
+                    error_msg = "Department is required for mentee users."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=400)
                 
-        except IntegrityError as e:
-            error_msg = f"Database integrity error: A user with this information already exists."
-            print(f"ERROR: {error_msg}")
-            print(f"IntegrityError details: {str(e)}")
-            return Response({"error": "A user with this information already exists."}, status=400)
-        except Exception as e:
-            error_msg = f"Error creating user: {str(e)}"
-            print(f"ERROR: {error_msg}")
-            print(traceback.format_exc())
-            return Response({"error": "Failed to create user account. Please try again."}, status=500)
-        
-        # Send email with credentials
-        try:
-            # Get department info for email
-            dept_info = ""
-            if role == 'mentee':
-                dept_info = f"Department: {user.department.name}"
-            elif role == 'mentor':
-                dept_names = [d.name for d in user.departments.all()]
-                dept_info = f"Departments: {', '.join(dept_names)}"
-            else:
-                dept_info = "Department: N/A (Admin/HR)"
+                # Validate department exists and is active
+                try:
+                    dept_obj = Department.objects.get(id=department, status='active')
+                except Department.DoesNotExist:
+                    error_msg = "Invalid or inactive department selected."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=400)
             
-            subject = "Welcome to BTSL Mentorship System"
-            message = f"""
-        Hello {full_name},
+            elif role == 'mentor':
+                if not departments or len(departments) == 0:
+                    error_msg = "At least one department is required for mentor users."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=400)
+                
+                # Validate all departments exist and are active
+                valid_depts = Department.objects.filter(id__in=departments, status='active')
+                if valid_depts.count() != len(departments):
+                    error_msg = "One or more selected departments are invalid or inactive."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=400)
+            
+            elif role in ['admin', 'hr']:
+                # Admin and HR don't require departments
+                department = None
+                departments = []
+            
+            # Role-based permission checks
+            if role != 'mentee' and not requesting_user:
+                error_msg = "Only admin or HR can create users with roles other than 'mentee'."
+                print(f"ERROR: {error_msg}")
+                return Response({"error": error_msg}, status=400)
+            
+            if requesting_user:
+                if role == 'admin' and not requesting_user.is_admin:
+                    error_msg = "Only admin can create admin users."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=403)
+                if role == 'hr' and not requesting_user.is_admin:
+                    error_msg = "Only admin can create HR users."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=403)
+                if role == 'mentor' and not (requesting_user.is_admin or requesting_user.is_hr):
+                    error_msg = "Only admin or HR can create mentor users."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=403)
+            
+            # Check for existing users
+            if CustomUser.objects.filter(phone_number=phone_number).exists():
+                error_msg = "A user with this phone number already exists."
+                print(f"ERROR: {error_msg}")
+                return Response({"error": error_msg}, status=400)
+            
+            if CustomUser.objects.filter(email=email).exists():
+                error_msg = "A user with this email already exists."
+                print(f"ERROR: {error_msg}")
+                return Response({"error": error_msg}, status=400)
+            
+            # Handle password
+            if requesting_user:
+                password = generate_secure_password()
+                if not password:
+                    error_msg = "Failed to generate secure password. Please try again."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=500)
+            else:
+                password = request.data.get('password', '').strip()
+                confirm_password = request.data.get('confirm_password', '').strip()
+                
+                if not password:
+                    error_msg = "Password is required."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=400)
+                
+                if not confirm_password:
+                    error_msg = "Password confirmation is required."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=400)
+                
+                if password != confirm_password:
+                    error_msg = "Passwords do not match."
+                    print(f"ERROR: {error_msg}")
+                    return Response({"error": error_msg}, status=400)
+                
+                password_error = is_valid_password(password)
+                if password_error:
+                    print(f"ERROR: {password_error}")
+                    return Response({"error": password_error}, status=400)
+            
+            # Generate work mail address
+            try:
+                work_mail_address = CustomUser.objects.generate_work_mail(full_name, role)
+                print(f"Generated work email: {work_mail_address}")
+            except Exception as e:
+                error_msg = f"Failed to generate work email address: {str(e)}"
+                print(f"ERROR: {error_msg}")
+                print(traceback.format_exc())
+                return Response({"error": "Failed to generate work email address. Please try again."}, status=500)
+            
+            # Create user with proper parameters based on role
+            try:
+                if role == 'mentee':
+                    user = CustomUser.objects.create_user(
+                        phone_number=phone_number,
+                        email=email,
+                        full_name=full_name,
+                        department=department,  # Pass department ID for mentee
+                        departments=None,
+                        role=role,
+                        work_mail_address=work_mail_address,
+                        password=password,
+                        created_by=requesting_user,
+                        status='approved' if requesting_user else 'pending',
+                        availability_status='active' if requesting_user else 'inactive'
+                    )
+                elif role == 'mentor':
+                    user = CustomUser.objects.create_user(
+                        phone_number=phone_number,
+                        email=email,
+                        full_name=full_name,
+                        department=None,
+                        departments=departments,  # Pass departments list for mentor
+                        role=role,
+                        work_mail_address=work_mail_address,
+                        password=password,
+                        created_by=requesting_user,
+                        status='approved' if requesting_user else 'pending',
+                        availability_status='active' if requesting_user else 'inactive'
+                    )
+                else:  # admin or hr
+                    user = CustomUser.objects.create_user(
+                        phone_number=phone_number,
+                        email=email,
+                        full_name=full_name,
+                        department=None,
+                        departments=None,
+                        role=role,
+                        work_mail_address=work_mail_address,
+                        password=password,
+                        created_by=requesting_user,
+                        status='approved' if requesting_user else 'pending',
+                        availability_status='active' if requesting_user else 'inactive'
+                    )
+                
+                print(f"SUCCESS: User created with ID: {user.id}")
+                print(f"User details: {user.full_name} - {user.work_mail_address}")
+                
+                if role == 'mentor':
+                    print(f"Mentor departments: {[d.name for d in user.departments.all()]}")
+                    
+            except IntegrityError as e:
+                error_msg = f"Database integrity error: A user with this information already exists."
+                print(f"ERROR: {error_msg}")
+                print(f"IntegrityError details: {str(e)}")
+                return Response({"error": "A user with this information already exists."}, status=400)
+            except Exception as e:
+                error_msg = f"Error creating user: {str(e)}"
+                print(f"ERROR: {error_msg}")
+                print(traceback.format_exc())
+                return Response({"error": "Failed to create user account. Please try again."}, status=500)
+            
+            # Send email with credentials
+            try:
+                # Get department info for email
+                dept_info = ""
+                if role == 'mentee':
+                    dept_info = f"Department: {user.department.name}"
+                elif role == 'mentor':
+                    dept_names = [d.name for d in user.departments.all()]
+                    dept_info = f"Departments: {', '.join(dept_names)}"
+                else:
+                    dept_info = "Department: N/A (Admin/HR)"
+                
+                subject = "Welcome to BTSL Mentorship System"
+                message = f"""
+            Hello {full_name},
 
-        Your account has been successfully created in the BTSL Mentorship System.
+            Your account has been successfully created in the BTSL Mentorship System.
 
-        Account Details:
-        - Full Name: {full_name}
-        - Role: {role.title()}
-            - {dept_info}
-            - Work Email: {work_mail_address}
-            - Personal Email: {email}
-            - Password: {password}
+            Account Details:
+            - Full Name: {full_name}
+            - Role: {role.title()}
+                - {dept_info}
+                - Work Email: {work_mail_address}
+                - Personal Email: {email}
+                - Password: {password}
 
-            Please use your work email ({work_mail_address}) to log in to the system.
+                Please use your work email ({work_mail_address}) to log in to the system.
 
-            Important: This is a system-generated password. For security reasons, please change it after your first login.
+                Important: This is a system-generated password. For security reasons, please change it after your first login.
 
-            If you have any questions, please contact our support team.
+                If you have any questions, please contact our support team.
 
-            Best regards,
-            BTSL Mentorship Team
-                        """
+                Best regards,
+                BTSL Mentorship Team
+                            """
+                            
+                send_mail(
+                                subject=subject,
+                                message=message,
+                                from_email="no-reply@btsl_mentorship.com",
+                                recipient_list=[email],
+                                fail_silently=False,
+                            )
+                print(f"SUCCESS: Email sent to {email}")
+                
+                success_msg = "User registered successfully. Please check your email for login credentials."
+                print(f"SUCCESS: {success_msg}")
+                print(f"{'='*50}\n")
                         
-            send_mail(
-                            subject=subject,
-                            message=message,
-                            from_email="no-reply@btsl_mentorship.com",
-                            recipient_list=[email],
-                            fail_silently=False,
-                        )
-            print(f"SUCCESS: Email sent to {email}")
-        except Exception as e:
-            error_msg = f"Warning: User created but email failed to send: {str(e)}"
-            print(f"WARNING: {error_msg}")
-                    
-            success_msg = "User registered successfully. Please check your email for login credentials."
-            print(f"SUCCESS: {success_msg}")
-            print(f"{'='*50}\n")
-                    
-            return Response({
-                        "message": success_msg,
-                        "work_mail_address": work_mail_address,
-                        "status": user.status,
-                        "role": user.role
-                    }, status=201)
-                    
-        except Exception as e:
-                    error_msg = f"Unexpected error during registration: {str(e)}"
-                    print(f"CRITICAL ERROR: {error_msg}")
-                    print(traceback.format_exc())
-                    return Response({
-                        "error": "An unexpected error occurred during registration. Please try again or contact support."
-                    }, status=500)
+                return Response({
+                            "message": success_msg,
+                            "work_mail_address": work_mail_address,
+                            "status": user.status,
+                            "role": user.role
+                        }, status=201)
+                        
+            except Exception as e:
+                error_msg = f"Warning: User created but email failed to send: {str(e)}"
+                print(f"WARNING: {error_msg}")
+                
+                # User created successfully but email failed - still return success
+                success_msg = "User registered successfully. Please check your email for login credentials (email delivery may be delayed)."
+                print(f"SUCCESS: {success_msg}")
+                print(f"{'='*50}\n")
+                        
+                return Response({
+                            "message": success_msg,
+                            "work_mail_address": work_mail_address,
+                            "status": user.status,
+                            "role": user.role,
+                            "warning": "Email delivery may be delayed"
+                        }, status=201)
 
     except Exception as e:
-        error_msg = f"Unexpected error during registration: {str(e)}"
-        print(f"CRITICAL ERROR: {error_msg}")
-        print(traceback.format_exc())
-        return Response({
-            "error": "An unexpected error occurred during registration. Please try again or contact support."
-        }, status=500)
+            error_msg = f"Unexpected error during registration: {str(e)}"
+            print(f"CRITICAL ERROR: {error_msg}")
+            print(traceback.format_exc())
+            return Response({
+                "error": "An unexpected error occurred during registration. Please try again or contact support."
+            }, status=500)
 
 @api_view(['POST'])
 @authentication_classes([])
@@ -1261,8 +1267,6 @@ BTSL Digital Mentorship Team
 
 
 
-
-
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def users_list_create(request):
@@ -1542,10 +1546,7 @@ def users_list_create(request):
                                 fail_silently=False,
                             )
                 print(f"SUCCESS: Email sent to {email}")
-            except Exception as e:
-                error_msg = f"Warning: User created but email failed to send: {str(e)}"
-                print(f"WARNING: {error_msg}")
-                        
+                
                 success_msg = "User registered successfully. Please check your email for login credentials."
                 print(f"SUCCESS: {success_msg}")
                 print(f"{'='*50}\n")
@@ -1558,12 +1559,21 @@ def users_list_create(request):
                         }, status=201)
                         
             except Exception as e:
-                        error_msg = f"Unexpected error during registration: {str(e)}"
-                        print(f"CRITICAL ERROR: {error_msg}")
-                        print(traceback.format_exc())
-                        return Response({
-                            "error": "An unexpected error occurred during registration. Please try again or contact support."
-                        }, status=500)
+                error_msg = f"Warning: User created but email failed to send: {str(e)}"
+                print(f"WARNING: {error_msg}")
+                
+                # User created successfully but email failed - still return success
+                success_msg = "User registered successfully. Please check your email for login credentials (email delivery may be delayed)."
+                print(f"SUCCESS: {success_msg}")
+                print(f"{'='*50}\n")
+                        
+                return Response({
+                            "message": success_msg,
+                            "work_mail_address": work_mail_address,
+                            "status": user.status,
+                            "role": user.role,
+                            "warning": "Email delivery may be delayed"
+                        }, status=201)
 
         except Exception as e:
             error_msg = f"Unexpected error during registration: {str(e)}"
@@ -1572,8 +1582,6 @@ def users_list_create(request):
             return Response({
                 "error": "An unexpected error occurred during registration. Please try again or contact support."
             }, status=500)
-
-
 
 
 

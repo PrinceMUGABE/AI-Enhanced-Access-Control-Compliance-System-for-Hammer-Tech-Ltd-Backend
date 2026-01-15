@@ -991,7 +991,7 @@ def list_mentorships(request):
             'mentor', 
             'mentee', 
             'department', 
-            'current_program',  # Changed from 'program' to 'current_program'
+            'current_program', 
             'created_by'
         ).prefetch_related(
             'programs',  # ManyToMany field
@@ -1027,6 +1027,8 @@ def list_mentorships(request):
                     mentorship_data['progress_percentage'] = 0
             
             mentorships_data.append(mentorship_data)
+
+            print("\n\nRetrived mentorships data: ", mentorships_data, "\n\n\n")
         
         return Response({
             'success': True,
@@ -3704,7 +3706,6 @@ def get_top_performing_mentors(request):
                 'id': mentor.id,
                 'name': mentor.full_name,
                 'email': mentor.email,
-                'profile_picture': mentor.profile_picture.url if mentor.profile_picture else None,
                 'total_mentorships': mentor.total_mentorships,
                 'completed_mentorships': mentor.completed_mentorships,
                 'active_mentorships': mentor.total_mentorships - mentor.completed_mentorships,
@@ -3758,34 +3759,6 @@ def calculate_performance_score(avg_rating, completion_rate, total_mentorships):
     
     return round(performance_score, 1)
 
-def calculate_performance_score(mentor):
-    """Calculate a performance score for a mentor (0-100)"""
-    score = 50  # Base score
-    
-    # Rating component (0-30 points)
-    if mentor.avg_rating:
-        score += (mentor.avg_rating - 3) * 10  # 3 rating = base, 5 rating = +20
-    
-    # Completion rate component (0-20 points)
-    if mentor.total_mentorships > 0:
-        completion_rate = mentor.completed_mentorships / mentor.total_mentorships
-        score += completion_rate * 20
-    
-    # Session rating component (0-20 points)
-    if mentor.avg_session_rating:
-        score += (mentor.avg_session_rating - 3) * 10
-    
-    # Response time component (-10 to +10 points)
-    if hasattr(mentor, 'response_time') and mentor.response_time:
-        avg_response_hours = mentor.response_time.total_seconds() / 3600
-        if avg_response_hours < 24:
-            score += 10
-        elif avg_response_hours < 48:
-            score += 5
-        elif avg_response_hours > 72:
-            score -= 10
-    
-    return min(max(round(score), 0), 100)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

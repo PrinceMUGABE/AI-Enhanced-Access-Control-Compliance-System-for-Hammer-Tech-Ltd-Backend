@@ -258,37 +258,37 @@ class OnboardingModuleSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['created_at', 'updated_at', 'created_by']
 
-        def get_multimedia_files(self, obj):
-      
-            files = obj.multimedia_files or []
-            processed_files = []
+    def get_multimedia_files(self, obj):
+        """Serialize multimedia files with proper URL formatting"""
+        files = obj.multimedia_files or []
+        processed_files = []
+        
+        for file in files:
+            # Normalize path - replace backslashes with forward slashes
+            url = file.get('url', '')
+            if url:
+                url = url.replace('\\', '/')
+                # Remove any leading slash and ensure it starts with media/
+                url = url.lstrip('/')
+                if not url.startswith('media/'):
+                    url = 'media/' + url
             
-            for file in files:
-                # Normalize path - replace backslashes with forward slashes
-                url = file.get('url', '')
-                if url:
-                    url = url.replace('\\', '/')
-                    # Ensure it starts with media/
-                    if not url.startswith('media/'):
-                        url = 'media/' + url.lstrip('/')
-                
-                processed_file = {
-                    'id': file.get('id', str(uuid.uuid4())),
-                    'url': url,  # Use normalized URL
-                    'type': file.get('type', ''),
-                    'title': file.get('title', ''),
-                    'description': file.get('description', ''),
-                    'size': file.get('size', 0),
-                    'duration': file.get('duration', 0),
-                    'thumbnail': file.get('thumbnail', ''),
-                    'extension': file.get('extension', ''),
-                    'uploaded_at': file.get('uploaded_at', ''),
-                    'uploaded_by': file.get('uploaded_by', '')
-                }
-                processed_files.append(processed_file)
-            
-            return processed_files
-
+            processed_file = {
+                'id': file.get('id', str(uuid.uuid4())),
+                'url': url,  # Use normalized URL
+                'type': file.get('type', ''),
+                'title': file.get('title', ''),
+                'description': file.get('description', ''),
+                'size': file.get('size', 0),
+                'duration': file.get('duration', 0),
+                'thumbnail': file.get('thumbnail', ''),
+                'extension': file.get('extension', ''),
+                'uploaded_at': file.get('uploaded_at', ''),
+                'uploaded_by': file.get('uploaded_by', '')
+            }
+            processed_files.append(processed_file)
+        
+        return processed_files
     def get_applicable_departments(self, obj):
         return obj.get_applicable_departments()
     
@@ -365,8 +365,6 @@ class OnboardingModuleSerializer(serializers.ModelSerializer):
                 OnboardingChecklist.objects.create(module=instance, **item_data)
         
         return instance
-
-
 class MenteeOnboardingProgressSerializer(serializers.ModelSerializer):
     mentee_name = serializers.CharField(source='mentee.full_name', read_only=True)
     mentee_email = serializers.CharField(source='mentee.email', read_only=True)

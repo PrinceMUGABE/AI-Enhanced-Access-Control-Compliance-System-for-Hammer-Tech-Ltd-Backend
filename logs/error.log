@@ -184,3 +184,137 @@ ERROR 2026-01-15 11:41:12,679 log 10024 10100 Internal Server Error: /report/men
 ERROR 2026-01-15 11:41:13,666 log 10024 3176 Internal Server Error: /report/mentee/sessions/
 ERROR 2026-01-15 13:18:46,232 log 11840 5288 Internal Server Error: /mentorship/top-performing-mentors/
 ERROR 2026-01-15 13:18:47,701 log 11840 5288 Internal Server Error: /mentorship/top-performing-mentors/
+ERROR 2026-01-15 14:58:38,875 log 15536 8472 Internal Server Error: /report/generate/
+ERROR 2026-01-15 15:11:38,590 log 15536 8472 Internal Server Error: /report/generate/
+ERROR 2026-01-15 15:15:22,810 log 12452 3176 Internal Server Error: /report/export/
+ERROR 2026-01-15 15:34:08,947 log 12452 3176 Internal Server Error: /report/generate/
+ERROR 2026-01-15 15:34:27,354 log 12452 3176 Internal Server Error: /report/generate/
+ERROR 2026-01-15 15:44:33,381 log 12452 3176 Internal Server Error: /report/generate/
+ERROR 2026-01-15 16:01:44,121 log 2276 6736 Internal Server Error: /onboarding/modules/
+ERROR 2026-01-15 16:01:44,542 log 2276 6736 Internal Server Error: /onboarding/modules/
+ERROR 2026-01-15 16:04:10,706 log 2276 6736 Internal Server Error: /onboarding/modules/
+ERROR 2026-01-15 16:04:11,242 log 2276 6736 Internal Server Error: /onboarding/modules/
+ERROR 2026-01-15 16:04:22,299 log 2276 6736 Internal Server Error: /onboarding/modules/
+ERROR 2026-01-15 16:04:22,910 log 2276 6736 Internal Server Error: /onboarding/modules/
+ERROR 2026-01-15 16:07:00,162 log 10904 17564 Internal Server Error: /mentorship/top-performing-mentors/
+ERROR 2026-01-15 16:07:01,655 log 10904 17564 Internal Server Error: /mentorship/top-performing-mentors/
+ERROR 2026-01-15 16:10:51,322 log 10904 17564 Internal Server Error: /mentorship/top-performing-mentors/
+ERROR 2026-01-15 16:10:52,942 log 10904 17564 Internal Server Error: /mentorship/top-performing-mentors/
+ERROR 2026-01-15 16:12:28,498 log 17400 15928 Internal Server Error: /mentorship/top-performing-mentors/
+ERROR 2026-01-15 16:12:30,061 log 17400 15928 Internal Server Error: /mentorship/top-performing-mentors/
+ERROR 2026-01-15 16:13:26,047 log 17400 15928 Internal Server Error: /mentorship/top-performing-mentors/
+ERROR 2026-01-15 16:13:27,699 log 17400 15928 Internal Server Error: /mentorship/top-performing-mentors/
+ERROR 2026-01-15 16:42:06,223 log 3388 2276 Internal Server Error: /users/
+Traceback (most recent call last):
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 555, in thread_handler
+    raise exc_info[1]
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 42, in inner
+    response = await get_response(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 555, in thread_handler
+    raise exc_info[1]
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 254, in _get_response_async
+    response = await wrapped_callback(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+        request, *callback_args, **callback_kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 504, in __call__
+    ret = await asyncio.shield(exec_coro)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\concurrent\futures\thread.py", line 86, in run
+    result = ctx.run(self.task)
+  File "C:\Python314\Lib\concurrent\futures\thread.py", line 73, in run
+    return fn(*args, **kwargs)
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 559, in thread_handler
+    return func(*args, **kwargs)
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\views\generic\base.py", line 106, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 517, in dispatch
+    self.response = self.finalize_response(request, response, *args, **kwargs)
+                    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 429, in finalize_response
+    assert isinstance(response, HttpResponseBase), (
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Expected a `Response`, `HttpResponse` or `StreamingHttpResponse` to be returned from the view, but received a `<class 'NoneType'>`
+ERROR 2026-01-15 16:44:21,949 log 3388 2276 Internal Server Error: /users/
+Traceback (most recent call last):
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 555, in thread_handler
+    raise exc_info[1]
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 42, in inner
+    response = await get_response(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 555, in thread_handler
+    raise exc_info[1]
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 254, in _get_response_async
+    response = await wrapped_callback(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+        request, *callback_args, **callback_kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 504, in __call__
+    ret = await asyncio.shield(exec_coro)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\concurrent\futures\thread.py", line 86, in run
+    result = ctx.run(self.task)
+  File "C:\Python314\Lib\concurrent\futures\thread.py", line 73, in run
+    return fn(*args, **kwargs)
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 559, in thread_handler
+    return func(*args, **kwargs)
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\views\generic\base.py", line 106, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 517, in dispatch
+    self.response = self.finalize_response(request, response, *args, **kwargs)
+                    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 429, in finalize_response
+    assert isinstance(response, HttpResponseBase), (
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Expected a `Response`, `HttpResponse` or `StreamingHttpResponse` to be returned from the view, but received a `<class 'NoneType'>`
+ERROR 2026-01-15 16:45:41,587 log 3388 2276 Internal Server Error: /users/
+Traceback (most recent call last):
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 555, in thread_handler
+    raise exc_info[1]
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\exception.py", line 42, in inner
+    response = await get_response(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 555, in thread_handler
+    raise exc_info[1]
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\core\handlers\base.py", line 254, in _get_response_async
+    response = await wrapped_callback(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+        request, *callback_args, **callback_kwargs
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 504, in __call__
+    ret = await asyncio.shield(exec_coro)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Python314\Lib\concurrent\futures\thread.py", line 86, in run
+    result = ctx.run(self.task)
+  File "C:\Python314\Lib\concurrent\futures\thread.py", line 73, in run
+    return fn(*args, **kwargs)
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\asgiref\sync.py", line 559, in thread_handler
+    return func(*args, **kwargs)
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\views\decorators\csrf.py", line 65, in _view_wrapper
+    return view_func(request, *args, **kwargs)
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\django\views\generic\base.py", line 106, in view
+    return self.dispatch(request, *args, **kwargs)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 517, in dispatch
+    self.response = self.finalize_response(request, response, *args, **kwargs)
+                    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\princ\AppData\Roaming\Python\Python314\site-packages\rest_framework\views.py", line 429, in finalize_response
+    assert isinstance(response, HttpResponseBase), (
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: Expected a `Response`, `HttpResponse` or `StreamingHttpResponse` to be returned from the view, but received a `<class 'NoneType'>`
+ERROR 2026-01-15 16:53:31,554 log 13940 3140 Internal Server Error: /auth/register/
+ERROR 2026-01-15 17:06:26,231 log 17588 5980 Internal Server Error: /auth/register/
+ERROR 2026-01-15 17:10:12,369 log 17588 5980 Internal Server Error: /auth/register/
