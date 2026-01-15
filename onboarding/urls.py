@@ -2,7 +2,7 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    # Existing URLs...
+  
     path('modules/', views.get_onboarding_modules, name='get-onboarding-modules'),
     path('modules/create/', views.create_onboarding_module, name='create-onboarding-module'),
     path('modules/<int:pk>/', views.get_onboarding_module_detail, name='get-onboarding-module-detail'),
@@ -22,7 +22,6 @@ urlpatterns = [
     path('departments/comparison/', views.get_department_comparison, name='get-department-comparison'),
     path('modules/<int:module_id>/department-performance/', views.get_department_module_performance, name='get-department-module-performance'),
     
-    # Existing URLs for progress management...
     path('progress/', views.get_mentee_progress, name='get-mentee-progress'),
     path('progress/<int:pk>/', views.get_mentee_progress_detail, name='get-mentee-progress-detail'),
     path('progress/<int:pk>/start/', views.start_onboarding_module, name='start-onboarding-module'),
@@ -30,6 +29,7 @@ urlpatterns = [
     path('progress/<int:pk>/update-percentage/', views.update_progress_percentage, name='update-progress-percentage'),
     path('progress/<int:pk>/update-details/', views.update_progress_details, name='update-progress-details'),
     path('progress/<int:pk>/update-checklist/', views.update_checklist_item, name='update-checklist-item'),
+    path('mentees/<int:mentee_id>/remove/', views.remove_candidate_from_onboarding, name='remove-candidate-from-onboarding'),
     
     # Progress Summary
     path('progress/my-summary/', views.get_my_progress_summary, name='get-my-progress-summary'),

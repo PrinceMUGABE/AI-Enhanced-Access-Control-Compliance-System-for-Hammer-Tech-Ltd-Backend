@@ -1317,6 +1317,7 @@ def get_onboarding_statistics(request):
 @permission_classes([IsAuthenticated])
 def assign_module_to_mentees(request, pk):
     """Assign a module to specific mentees"""
+    print("\n Submitted data: ", request.data, "\n\n")
     try:
         if request.user.role not in ['admin', 'hr']:
             logger.warning(f"Unauthorized assignment attempt by user {request.user.id}")
@@ -3166,3 +3167,218 @@ def get_department_modules(request):
             {'error': 'An internal server error occurred'},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def remove_candidate_from_onboarding(request, mentee_id):
+    """
+    Remove a candidate from onboarding by completely deleting all their onboarding-related records.
+    This removes ALL traces of the mentee from onboarding tables.
+    Only admins and HR can perform this action.
+    """
+    try:
+        # Permission check
+        if request.user.role not in ['admin', 'hr']:
+            logger.warning(f"Unauthorized remove attempt by user {request.user.id}")
+            return Response(
+                {'error': 'Only admins and HR can remove candidates from onboarding'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Validate mentee exists
+        try:
+            mentee = CustomUser.objects.get(id=mentee_id, role='mentee')
+        except CustomUser.DoesNotExist:
+            logger.error(f"Mentee {mentee_id} not found")
+            return Response(
+                {'error': 'Mentee not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # For complete removal from onboarding, we always remove ALL records
+        # This ensures the mentee is completely removed from onboarding system
+        module_ids = request.data.get('module_ids', [])
+        remove_all = request.data.get('remove_all', True)  # Default to True for complete removal
+        
+        with transaction.atomic():
+            if remove_all or not module_ids:
+                # COMPLETE REMOVAL: Delete ALL onboarding-related records for this mentee
+                
+                # 1. Get all progress records for counting and module titles
+                progress_records = MenteeOnboardingProgress.objects.filter(mentee=mentee)
+                total_count = progress_records.count()
+                module_titles = list(progress_records.values_list('module__title', flat=True))
+                
+                logger.info(f"Starting complete removal of mentee {mentee_id} from onboarding. {total_count} modules found.")
+                
+                # 2. Delete ALL related checklist progress (for any module this mentee has)
+                checklist_deleted = MenteeChecklistProgress.objects.filter(mentee=mentee).delete()
+                logger.info(f"Deleted {checklist_deleted[0]} checklist progress records for mentee {mentee_id}")
+                
+                # 3. Delete ALL deadlines for this mentee
+                deadlines_deleted = OnboardingDeadline.objects.filter(mentee=mentee).delete()
+                logger.info(f"Deleted {deadlines_deleted[0]} deadline records for mentee {mentee_id}")
+                
+                # 4. Delete ALL notifications for this mentee related to onboarding
+                # This includes notifications where mentee is recipient AND related to their progress
+                notifications_deleted = OnboardingNotification.objects.filter(
+                    recipient=mentee
+                ).delete()
+                logger.info(f"Deleted {notifications_deleted[0]} notification records for mentee {mentee_id}")
+                
+                # 5. Finally, delete ALL progress records
+                progress_deleted = progress_records.delete()
+                logger.info(f"Deleted {progress_deleted[0]} progress records for mentee {mentee_id}")
+                
+                # 6. Send final notification to mentee about complete removal
+                title = "Removed from Onboarding Program"
+                message = f"""
+                Hello {mentee.full_name},
+                
+                You have been completely removed from the onboarding program by {request.user.full_name}.
+                
+                All your onboarding progress, modules, deadlines, and related records have been deleted.
+                
+                If you believe this is an error or need to be re-enrolled, please contact your HR department.
+                
+                Best regards,
+                Mentorship Program Team
+                """
+                
+                try:
+                    send_onboarding_notification(
+                        recipient=mentee,
+                        notification_type='status_changed',
+                        title=title,
+                        message=message
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send removal notification to mentee {mentee_id}: {str(e)}")
+                
+                logger.info(f"Successfully completed full removal of mentee {mentee_id} from onboarding system")
+                
+                return Response({
+                    'message': f'Successfully removed {mentee.full_name} from onboarding program',
+                    'mentee_id': mentee.id,
+                    'mentee_name': mentee.full_name,
+                    'modules_removed': total_count,
+                    'removed_modules': module_titles,
+                    'removed_by': request.user.full_name,
+                    'records_deleted': {
+                        'progress_records': progress_deleted[0],
+                        'checklist_progress': checklist_deleted[0],
+                        'deadlines': deadlines_deleted[0],
+                        'notifications': notifications_deleted[0]
+                    }
+                })
+            
+            else:
+                # PARTIAL REMOVAL: Remove only specific modules (optional functionality)
+                try:
+                    module_ids = [int(id) for id in module_ids]
+                except (ValueError, TypeError):
+                    logger.error(f"Invalid module IDs format: {module_ids}")
+                    return Response(
+                        {'error': 'Invalid module IDs. Must be integers.'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Get progress records for specified modules
+                progress_records = MenteeOnboardingProgress.objects.filter(
+                    mentee=mentee,
+                    module_id__in=module_ids
+                )
+                
+                if not progress_records.exists():
+                    logger.warning(f"No progress found for mentee {mentee_id} and modules {module_ids}")
+                    return Response(
+                        {'error': 'No progress records found for specified modules'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
+                
+                # Get module details before deletion
+                removed_modules = []
+                for progress in progress_records:
+                    removed_modules.append({
+                        'id': progress.module.id,
+                        'title': progress.module.title,
+                        'progress': progress.progress_percentage,
+                        'status': progress.status
+                    })
+                
+                # Delete related checklist progress for specified modules only
+                checklist_deleted = MenteeChecklistProgress.objects.filter(
+                    mentee=mentee,
+                    checklist_item__module_id__in=module_ids
+                ).delete()
+                
+                # Delete related deadlines for specified modules only
+                deadlines_deleted = OnboardingDeadline.objects.filter(
+                    mentee=mentee,
+                    module_id__in=module_ids
+                ).delete()
+                
+                # Delete related notifications for specified modules only
+                notifications_deleted = OnboardingNotification.objects.filter(
+                    recipient=mentee,
+                    related_progress__in=progress_records
+                ).delete()
+                
+                # Delete progress records for specified modules
+                deleted_count = progress_records.count()
+                progress_deleted = progress_records.delete()
+                
+                # Send notification to mentee about partial removal
+                module_list = "\n".join([f"- {m['title']}" for m in removed_modules])
+                title = "Onboarding Modules Removed"
+                message = f"""
+                Hello {mentee.full_name},
+                
+                The following onboarding modules have been removed from your account by {request.user.full_name}:
+                
+                {module_list}
+                
+                If you believe this is an error, please contact your HR department.
+                
+                Best regards,
+                Mentorship Program Team
+                """
+                
+                try:
+                    send_onboarding_notification(
+                        recipient=mentee,
+                        notification_type='status_changed',
+                        title=title,
+                        message=message
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to send partial removal notification to mentee {mentee_id}: {str(e)}")
+                
+                logger.info(f"Removed {deleted_count} specific modules from mentee {mentee_id}")
+                
+                return Response({
+                    'message': f'Successfully removed {deleted_count} modules from {mentee.full_name}',
+                    'mentee_id': mentee.id,
+                    'mentee_name': mentee.full_name,
+                    'modules_removed': deleted_count,
+                    'removed_modules': removed_modules,
+                    'removed_by': request.user.full_name,
+                    'records_deleted': {
+                        'progress_records': progress_deleted[0],
+                        'checklist_progress': checklist_deleted[0],
+                        'deadlines': deadlines_deleted[0],
+                        'notifications': notifications_deleted[0]
+                    }
+                })
+        
+    except Exception as e:
+        logger.error(f"Error in remove_candidate_from_onboarding: {str(e)}")
+        logger.error(traceback.format_exc())
+        return Response(
+            {'error': 'An internal server error occurred'},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+    
+
+    
