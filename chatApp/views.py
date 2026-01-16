@@ -907,7 +907,7 @@ def handle_webrtc_signal(request):
         call = get_object_or_404(VideoCall, call_id=call_id)
         
         # Check if user is participant
-        is_participant = call.participants.filter(id=user.id).exists()
+        is_participant = call.participants.filter(id=user.id).exists() or request.user.rol in ['admin', 'hr']
         if not is_participant:
             raise PermissionDenied('You are not a participant in this call')
         
@@ -1033,7 +1033,7 @@ def update_typing_status(request):
         chat_room = get_object_or_404(ChatRoom, id=chat_room_id, is_active=True)
         
         # Check if user is participant
-        if not chat_room.participants.filter(id=user.id).exists():
+        if not chat_room.participants.filter(id=user.id).exists() or request.user.role not in ['admin', 'hr']:
             raise PermissionDenied('You are not a participant in this chat')
         
         # Update or create typing indicator
@@ -1109,7 +1109,7 @@ def get_call_details(request, call_id):
         video_call = get_object_or_404(VideoCall, call_id=call_id)
         
         # Check if user is participant or admin/hr
-        is_participant = video_call.participants.filter(id=user.id).exists()
+        is_participant = video_call.participants.filter(id=user.id).exists() or request.user.role in ['admin', 'hr']
         if not is_participant and user.role not in ['admin', 'hr']:
             raise PermissionDenied('You are not a participant in this call')
         
@@ -1138,6 +1138,7 @@ def get_call_details(request, call_id):
 @permission_classes([IsAuthenticated])
 def upload_file(request):
     """Handle file upload for chat messages"""
+    print("Submitted data: ", request.data, "\n\n")
     try:
         user = request.user
         
@@ -1486,7 +1487,7 @@ def join_conference_call(request):
         video_call = get_object_or_404(VideoCall, call_id=call_id)
         
         # Check if user is allowed to join
-        is_participant = video_call.participants.filter(id=user.id).exists()
+        is_participant = video_call.participants.filter(id=user.id).exists() or request.user.role in ['admin', 'hr']
         if not is_participant:
             raise PermissionDenied('You are not invited to this call')
         
