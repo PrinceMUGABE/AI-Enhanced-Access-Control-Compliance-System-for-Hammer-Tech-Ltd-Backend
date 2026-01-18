@@ -542,6 +542,10 @@ def update_user(request, user_id):
     try:
         target_user = CustomUser.objects.get(id=user_id)
         
+        # Store the original status before any updates
+        original_status = target_user.status
+        original_is_active = target_user.is_active
+        
         phone_number = request.data.get('phone_number')
         email = request.data.get('email')
         full_name = request.data.get('full_name')
@@ -586,8 +590,6 @@ def update_user(request, user_id):
                 try:
                     dept_obj = Department.objects.get(id=department, status='active')
                     target_user.department = dept_obj
-                    # Clear M2M departments for mentee
-                    # We'll do this after save to avoid issues
                 except Department.DoesNotExist:
                     print("ERROR: Invalid or inactive department selected.")
                     return Response({
@@ -680,11 +682,77 @@ def update_user(request, user_id):
             target_user.departments.clear()
             print("SUCCESS: Cleared departments for admin/hr")
         
+        # Check if status changed from inactive to active and send email
+        status_changed_to_active = (
+            original_status in ['pending', 'rejected'] and 
+            target_user.status == 'approved'
+        )
+        
+        if status_changed_to_active:
+            print(f"Status changed from '{original_status}' to 'approved' - sending activation email")
+            
+            try:
+                # Get department info for email
+                dept_info = ""
+                if target_user.role == 'mentee' and target_user.department:
+                    dept_info = f"\n- Department: {target_user.department.name}"
+                elif target_user.role == 'mentor':
+                    dept_names = [d.name for d in target_user.departments.all()]
+                    if dept_names:
+                        dept_info = f"\n- Departments: {', '.join(dept_names)}"
+                
+                subject = "Account Activated - BTSL Mentorship System"
+                message = f"""
+Hello {target_user.full_name},
+
+Great news! Your account has been approved and activated in the BTSL Digital Mentorship System.
+
+Account Details:
+- Full Name: {target_user.full_name}
+- Role: {target_user.role.title()}
+- Work Email: {target_user.work_mail_address}
+- Personal Email: {target_user.email}{dept_info}
+
+You can now log in to the system using your work email address ({target_user.work_mail_address}) and your password.
+
+If you have forgotten your password, you can reset it using the "Forgot Password" link on the login page.
+
+Access the system at: [Your System URL]
+
+If you have any questions or need assistance, please don't hesitate to contact our support team.
+
+Welcome aboard!
+
+Best regards,
+BTSL Digital Mentorship Team
+                """
+                
+                send_mail(
+                    subject=subject,
+                    message=message,
+                    from_email="no-reply@btsl_mentorship.com",
+                    recipient_list=[target_user.email],
+                    fail_silently=False,
+                )
+                
+                print(f"SUCCESS: Account activation email sent to {target_user.email}")
+                
+            except Exception as e:
+                error_msg = f"Warning: User updated but activation email failed to send: {str(e)}"
+                print(f"WARNING: {error_msg}")
+                # Continue even if email fails - user is still activated
+        
         serializer = CustomUserSerializer(target_user)
         print(f"SUCCESS: User {target_user.id} updated successfully")
+        
+        response_message = "User updated successfully."
+        if status_changed_to_active:
+            response_message += " Activation email has been sent to the user."
+        
         return Response({
-            "message": "User updated successfully.",
-            "user": serializer.data
+            "message": response_message,
+            "user": serializer.data,
+            "email_sent": status_changed_to_active
         }, status=200)
         
     except ObjectDoesNotExist:
@@ -697,8 +765,7 @@ def update_user(request, user_id):
         print(f"ERROR: An unexpected error occurred: {str(e)}")
         import traceback
         print(traceback.format_exc())
-        return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=500)
-    
+        return Response({"error": f"An unexpected error occurred: {str(e)}"}, status=500)    
     
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
