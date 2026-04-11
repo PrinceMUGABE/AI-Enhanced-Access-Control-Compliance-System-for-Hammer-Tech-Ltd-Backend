@@ -36,12 +36,13 @@ INSTALLED_APPS = [
     'corsheaders',
     'channels',
     'userApp',
-    'onboarding',
-    'mentorshipApp',
     'departmentApp',
-    'chatApp',
-    'notificationApp',
-    'assistanceApp',
+    'incidentApp',
+    'riskAssessmentApp',
+    'complianceAuditApp',
+    'trainingApp',
+    'trainingCandidateApp',
+    'learningProgressApp',
     'reportApp',
     
 ]
@@ -55,6 +56,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'userApp.middleware.ActivityLoggingMiddleware',
 ]
 
 
@@ -84,14 +86,20 @@ ASGI_APPLICATION = 'backend.asgi.application'
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
+
+
 DATABASES = {
     'default': {
-        'ENGINE': 'mysql.connector.django',
-        'NAME': 'teta_db',
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'joshua_db',
         'USER': 'root',
-        'PASSWORD': '07288',
-        'HOST': 'localhost',
+        'PASSWORD': '',
+        'HOST': '127.0.0.1', 
         'PORT': '3306',
+        'OPTIONS': {
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+            'charset': 'utf8mb4',
+        },
     }
 }
 
@@ -177,18 +185,15 @@ CORS_ALLOW_ALL_ORIGINS = True
 
 # settings.py
 
-# Add media configurations
-MEDIA_URL = '/media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
-
 # Email Configuration
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_BACKEND = 'backend.email_backend.SSLEmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'princemugabe567@gmail.com'
-EMAIL_HOST_PASSWORD = 'qdzu gzbd bnjl qamv'
-DEFAULT_FROM_EMAIL = 'Digital Mentorship  <princemugabe567@gmail.com>'
+EMAIL_HOST_USER = 'princemugabe568@gmail.com'
+EMAIL_HOST_PASSWORD = 'fhus hvzu bdjn cwlo'
+DEFAULT_FROM_EMAIL = 'HammerTech Group  <princemugabe567@gmail.com>'
 
 
 
@@ -272,10 +277,10 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '10000/day',
-        'user': '10000/day',
-        'assistance_anon': '500/hour',
-        'assistance_user': '5000/hour',
+        'anon': '100000/day',
+        'user': '100000/day',
+        'assistance_anon': '10000/hour',
+        'assistance_user': '100000/hour',
     }
 }
 
@@ -304,12 +309,17 @@ LOGGING = {
         'require_debug_true': {
             '()': 'django.utils.log.RequireDebugTrue',
         },
+        'ignore_404': {
+            '()': 'django.utils.log.CallbackFilter',
+            'callback': lambda record: '404' not in record.getMessage(),
+        },
     },
     'handlers': {
         'console': {
             'level': 'DEBUG',
             'class': 'logging.StreamHandler',
             'formatter': 'simple',
+            'filters': ['ignore_404'],
         },
         'file': {
             'level': 'INFO',
@@ -351,6 +361,11 @@ LOGGING = {
             'level': 'DEBUG',
             'propagate': False,
         },
+        'django.request': {
+        'handlers': ['error_file'],  # Remove 'console' from here
+        'level': 'ERROR',
+        'propagate': False,
+        },
         # Add other apps as needed
     },
     'root': {
@@ -362,6 +377,9 @@ LOGGING = {
 # Create logs directory if it doesn't exist
 LOG_DIR = os.path.join(BASE_DIR, 'logs')
 os.makedirs(LOG_DIR, exist_ok=True)
+
+# Ensure compliance reports directory exists
+os.makedirs(os.path.join(MEDIA_ROOT, 'compliance_reports'), exist_ok=True)
 
 CORS_EXPOSE_HEADERS = ['Content-Type', 'Authorization']
 
@@ -385,3 +403,38 @@ ALLOWED_FILE_TYPES = {
 }
 
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB per file
+
+
+
+
+# Celery Configuration
+CELERY_BROKER_URL = 'redis://127.0.0.1:6379/0'
+CELERY_RESULT_BACKEND = 'redis://127.0.0.1:6379/0'  # Use Redis instead of DB
+
+# Celery Beat (Scheduler) Configuration - Use Redis
+CELERY_BEAT_SCHEDULER = 'redbeat.RedBeatScheduler'
+CELERY_REDBEAT_REDIS_URL = 'redis://127.0.0.1:6379/1'
+
+# Celery Task Configuration
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'
+CELERY_ENABLE_UTC = True
+
+# Celery Task Results
+CELERY_RESULT_EXTENDED = True
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60  # 30 minutes
+CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60  # 25 minutes
+
+# Celery Worker Configuration
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000
+
+# Celery Logging
+CELERY_WORKER_HIJACK_ROOT_LOGGER = False
+CELERY_WORKER_LOG_FORMAT = '[%(asctime)s: %(levelname)s/%(processName)s] %(message)s'
+CELERY_WORKER_TASK_LOG_FORMAT = '[%(asctime)s: %(levelname)s/%(processName)s][%(task_name)s(%(task_id)s)] %(message)s'
+
+# ==================== END CELERY CONFIGURATION ====================

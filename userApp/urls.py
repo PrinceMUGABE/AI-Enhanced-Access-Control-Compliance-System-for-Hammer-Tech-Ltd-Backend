@@ -7,8 +7,9 @@ from rest_framework_simplejwt.views import TokenRefreshView
 urlpatterns = [
     # Authentication
     path('auth/register/', views.register_user, name='auth-register'),
-    path('auth/login/', views.login_user, name='auth-login'),
+    path('auth/login-with-otp/request/', views.login_with_otp_request, name='auth-login'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
+    path('auth/login-with-otp/verify/', views.login_with_otp_verify, name='auth-login-verify'),
     
     
     # Users resource (admin/HR)
@@ -41,4 +42,22 @@ urlpatterns = [
 
     path('auth/logout/', views.logout_user, name='auth-logout'),
     path('auth/verify-token/', views.verify_token, name='verify-token'),
+
+
+    # Log endpoints
+    path('logs/', views.UserLogListAPIView.as_view(), name='user-logs-list'),
+    path('logs/<int:pk>/', views.UserLogDetailAPIView.as_view(), name='user-log-detail'),
+    path('logs/my/', views.get_my_activity_logs, name='my-activity-logs'),
+    path('access-control/stats/', views.get_access_control_stats, name='access-control-stats'),
+    path('access-control/users/', views.get_users_for_access_control, name='access-control-users'),
+    path('access-control/users/<int:user_id>/logs/', views.get_user_activity_logs, name='user-activity-logs'),
+
+
+     # Access Control URLs
+    path('get_access_control_stats/', views.get_access_control_stats, name='get_access_control_stats'),
+    path('get_users_for_access_control/', views.get_users_for_access_control, name='get_users_for_access_control'),
+    path('get_user_activity_logs/<int:user_id>/', views.get_user_activity_logs, name='get_user_activity_logs'),
+    
+    # Activity Logging endpoint
+    path('log_activity/', views.log_activity, name='log_activity'),
 ]

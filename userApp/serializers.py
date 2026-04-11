@@ -1,7 +1,7 @@
 # serializers.py - Updated with Department Validation
 
 from rest_framework import serializers
-from .models import CustomUser
+from .models import CustomUser, UserLog
 from departmentApp.models import Department
 
 
@@ -24,7 +24,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
             'full_name', 'role', 'department', 'departments',
             'department_details', 'departments_details',
             'status', 'availability_status', 'created_at', 
-            'created_by', 'created_by_name'
+            'created_by', 'created_by_name', 'is_admin'
         ]
         read_only_fields = ['work_mail_address', 'created_at', 'created_by']
     
@@ -34,18 +34,20 @@ class CustomUserSerializer(serializers.ModelSerializer):
         return None
     
     def get_department_details(self, obj):
-        """Get department details for mentees"""
-        if obj.role == 'mentee' and obj.department:
+        """Get department details for employees (who have a single department)"""
+        # Changed from 'mentee' to 'employee' to match your actual role choices
+        if obj.role == 'employee' and obj.department:
             return {
                 'id': obj.department.id,
                 'name': obj.department.name,
                 'status': obj.department.status
             }
         return None
-    
+
     def get_departments_details(self, obj):
-        """Get departments details for mentors"""
-        if obj.role == 'mentor':
+        """Get departments details for security analysts"""
+        # Changed from 'mentor' to 'security_analyst' to match your actual role choices
+        if obj.role == 'security_analyst':
             return [
                 {
                     'id': dept.id,
@@ -56,7 +58,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
             ]
         return []
 
-
+# userApp/serializers.py - UserCreateSerializer update
 class UserCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating users with department validation"""
     department = serializers.PrimaryKeyRelatedField(
@@ -69,67 +71,59 @@ class UserCreateSerializer(serializers.ModelSerializer):
         queryset=Department.objects.filter(status='active'),
         required=False
     )
-    password = serializers.CharField(write_only=True, required=False)
-    confirm_password = serializers.CharField(write_only=True, required=False)
+    # REMOVE password and confirm_password fields - they are system-generated
+    # password = serializers.CharField(write_only=True, required=False)  # REMOVE
+    # confirm_password = serializers.CharField(write_only=True, required=False)  # REMOVE
     
     class Meta:
         model = CustomUser
         fields = [
             'phone_number', 'email', 'full_name', 'role',
-            'department', 'departments', 'password', 'confirm_password'
+            'department', 'departments'  # Remove password fields
         ]
     
     def validate(self, data):
-        role = data.get('role', 'mentee')
+        role = data.get('role', 'employee')  # Default to 'employee'
         department = data.get('department')
         departments = data.get('departments', [])
         
         # Validate department requirements based on role
-        if role == 'mentee':
+        if role == 'employee':
             if not department:
                 raise serializers.ValidationError({
-                    'department': 'Mentee users must have a department assigned.'
+                    'department': 'Employee users must have a department assigned.'
                 })
         
-        elif role == 'mentor':
+        elif role == 'security_analyst':
             if not departments or len(departments) == 0:
                 raise serializers.ValidationError({
-                    'departments': 'Mentor users must have at least one department assigned.'
+                    'departments': 'Security Analyst users must have at least one department assigned.'
                 })
         
-        elif role in ['admin', 'hr']:
+        elif role in ['admin', 'hr_manager']:
             # Clear departments for admin/hr
             data['department'] = None
             data['departments'] = []
         
-        # Validate password matching if provided
-        password = data.get('password')
-        confirm_password = data.get('confirm_password')
-        
-        if password and confirm_password:
-            if password != confirm_password:
-                raise serializers.ValidationError({
-                    'confirm_password': 'Passwords do not match.'
-                })
-        
+        # REMOVE password validation - passwords are system-generated
         return data
     
     def create(self, validated_data):
         departments = validated_data.pop('departments', [])
-        validated_data.pop('confirm_password', None)
-        password = validated_data.pop('password', None)
+        
+        # Generate system password
+        password = CustomUser.objects.make_random_password(length=12)
         
         user = CustomUser.objects.create_user(
-            password=password,
+            password=password,  # System-generated password
             **validated_data
         )
         
-        # Set multiple departments for mentors
-        if user.role == 'mentor' and departments:
+        # Set multiple departments for security analysts
+        if user.role == 'security_analyst' and departments:
             user.departments.set(departments)
         
         return user
-
 
 class UserUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating users (admin/HR only)"""
@@ -167,19 +161,19 @@ class UserUpdateSerializer(serializers.ModelSerializer):
                 })
         
         # Validate department requirements
-        if role == 'mentee':
+        if role == 'employee':
             if department is None and 'department' in data:
                 raise serializers.ValidationError({
-                    'department': 'Mentee users must have a department assigned.'
+                    'department': 'Employee users must have a department assigned.'
                 })
         
-        elif role == 'mentor':
+        elif role == 'security_analyst':
             if departments is not None and len(departments) == 0:
                 raise serializers.ValidationError({
-                    'departments': 'Mentor users must have at least one department assigned.'
+                    'departments': 'Security Analyst users must have at least one department assigned.'
                 })
         
-        elif role in ['admin', 'hr']:
+        elif role in ['admin', 'hr_manager']:
             data['department'] = None
         
         return data
@@ -193,13 +187,13 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         
         instance.save()
         
-        # Update departments for mentors
-        if instance.role == 'mentor' and departments is not None:
+        # Update departments for security analysts
+        if instance.role == 'security_analyst' and departments is not None:
             instance.departments.set(departments)
             instance.department = None  # Clear FK
-        elif instance.role == 'mentee':
+        elif instance.role == 'employee':
             instance.departments.clear()  # Clear M2M
-        elif instance.role in ['admin', 'hr']:
+        elif instance.role in ['admin', 'hr_manager']:
             instance.departments.clear()
             instance.department = None
         
@@ -276,15 +270,15 @@ class UpdateDepartmentSerializer(serializers.Serializer):
         department = data.get('department')
         departments = data.get('departments', [])
         
-        if user.role == 'mentee':
+        if user.role == 'employee':
             if not department and department is not None:
                 raise serializers.ValidationError({
-                    'department': 'Mentee users must have a department assigned.'
+                    'department': 'Employee users must have a department assigned.'
                 })
-        elif user.role == 'mentor':
+        elif user.role == 'security_analyst':
             if not departments:
                 raise serializers.ValidationError({
-                    'departments': 'Mentor users must have at least one department assigned.'
+                    'departments': 'Security Analyst users must have at least one department assigned.'
                 })
         
         return data
@@ -341,3 +335,82 @@ class DepartmentSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(f"Status must be one of: {', '.join(valid_statuses)}")
         return value
 
+
+
+
+
+
+class LoginOTPRequestSerializer(serializers.Serializer):
+    """Serializer for OTP login request"""
+    email = serializers.CharField(required=True, write_only=True)
+    password = serializers.CharField(required=True, write_only=True)
+
+class LoginOTPVerifySerializer(serializers.Serializer):
+    """Serializer for OTP verification"""
+    email = serializers.CharField(required=True, write_only=True)
+    otp = serializers.CharField(required=True, write_only=True, max_length=6, min_length=6)
+
+
+
+
+
+class UserLogSerializer(serializers.ModelSerializer):
+    user_details = serializers.SerializerMethodField()
+    target_user_details = serializers.SerializerMethodField()
+    target_department_details = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = UserLog
+        fields = [
+            'id',
+            'user',
+            'user_details',
+            'user_email',
+            'user_role',
+            'log_type',
+            'activity',
+            'description',
+            'target_user',
+            'target_user_details',
+            'target_department',
+            'target_department_details',
+            'ip_address',
+            'user_agent',
+            'endpoint',
+            'http_method',
+            'status_code',
+            'is_success',
+            'is_auto_generated',
+            'timestamp',
+            'duration',
+            'created_at',
+            'request_data',
+            'response_data'
+        ]
+        read_only_fields = fields
+    
+    def get_user_details(self, obj):
+        if obj.user:
+            return {
+                'id': obj.user.id,
+                'full_name': obj.user.full_name,
+                'work_mail_address': obj.user.work_mail_address
+            }
+        return None
+    
+    def get_target_user_details(self, obj):
+        if obj.target_user:
+            return {
+                'id': obj.target_user.id,
+                'full_name': obj.target_user.full_name,
+                'email': obj.target_user.email
+            }
+        return None
+    
+    def get_target_department_details(self, obj):
+        if obj.target_department:
+            return {
+                'id': obj.target_department.id,
+                'name': obj.target_department.name
+            }
+        return None

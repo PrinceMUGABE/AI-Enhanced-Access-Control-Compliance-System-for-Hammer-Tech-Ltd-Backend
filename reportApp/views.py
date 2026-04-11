@@ -1,1787 +1,2594 @@
-# reportApp/views.py
-
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+# reportApp/views.py - FINAL FIXED VERSION
+from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
-from django.db.models import Count, Q, Avg, Sum, F
-from django.utils.timezone import now
-from datetime import date, timedelta
-
-from userApp.models import CustomUser
-from departmentApp.models import Department
-from onboarding.models import (
-    OnboardingModule, MenteeOnboardingProgress,
-    OnboardingChecklist, MenteeChecklistProgress
-)
-from mentorshipApp.models import (
-    Mentorship, MentorshipSession, MentorshipProgram,
-    MentorshipReview
-)
-
-
-# ==================== HELPER FUNCTIONS ====================
-def check_role_permission(user, allowed_roles):
-    """Check if user has permission based on role"""
-    if user.role not in allowed_roles:
-        return False
-    return True
-
-
-# ==================== ADMIN REPORTS ====================
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def admin_dashboard_overview(request):
-    """Admin dashboard with overall system statistics"""
-    try:
-        user = request.user
-        
-        # Check permission
-        if not check_role_permission(user, ['admin']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Admin access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        # User statistics
-        total_users = CustomUser.objects.count()
-        active_users = CustomUser.objects.filter(availability_status='active').count()
-        pending_approvals = CustomUser.objects.filter(status='pending').count()
-        
-        users_by_role = CustomUser.objects.values('role').annotate(
-            count=Count('id')
-        )
-        
-        # Department statistics
-        total_departments = Department.objects.filter(status='active').count()
-        
-        # Mentorship statistics
-        total_mentorships = Mentorship.objects.count()
-        active_mentorships = Mentorship.objects.filter(status='active').count()
-        completed_mentorships = Mentorship.objects.filter(status='completed').count()
-        
-        # Onboarding statistics
-        total_modules = OnboardingModule.objects.filter(is_active=True).count()
-        total_progress = MenteeOnboardingProgress.objects.count()
-        completed_progress = MenteeOnboardingProgress.objects.filter(status='completed').count()
-        
-        completion_rate = 0
-        if total_progress > 0:
-            completion_rate = round((completed_progress / total_progress) * 100, 2)
-        
-        # Session statistics
-        total_sessions = MentorshipSession.objects.count()
-        completed_sessions = MentorshipSession.objects.filter(status='completed').count()
-        upcoming_sessions = MentorshipSession.objects.filter(
-            status='scheduled',
-            scheduled_date__gte=now()
-        ).count()
-        
-        data = {
-            'success': True,
-            'users': {
-                'total': total_users,
-                'active': active_users,
-                'pending_approvals': pending_approvals,
-                'by_role': list(users_by_role)
-            },
-            'departments': {
-                'total': total_departments
-            },
-            'mentorships': {
-                'total': total_mentorships,
-                'active': active_mentorships,
-                'completed': completed_mentorships
-            },
-            'onboarding': {
-                'total_modules': total_modules,
-                'total_progress_records': total_progress,
-                'completed': completed_progress,
-                'completion_rate': completion_rate
-            },
-            'sessions': {
-                'total': total_sessions,
-                'completed': completed_sessions,
-                'upcoming': upcoming_sessions
-            },
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ Admin Dashboard Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        print(f"\n[REPORT ERROR] ❌ Admin Dashboard Error: {str(e)}\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating admin dashboard: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def admin_user_analytics(request):
-    """Detailed user analytics for admin"""
-    try:
-        user = request.user
-        
-        if not check_role_permission(user, ['admin']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Admin access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        # Users by department
-        users_by_dept = Department.objects.filter(status='active').annotate(
-            mentee_count=Count('users', filter=Q(users__role='mentee')),
-            mentor_count=Count('mentors', filter=Q(mentors__role='mentor'))
-        ).values('id', 'name', 'mentee_count', 'mentor_count')
-        
-        # Users by status
-        users_by_status = CustomUser.objects.values('status').annotate(
-            count=Count('id')
-        )
-        
-        # Recent registrations (last 30 days)
-        thirty_days_ago = now() - timedelta(days=30)
-        recent_users = CustomUser.objects.filter(
-            created_at__gte=thirty_days_ago
-        ).count()
-        
-        data = {
-            'success': True,
-            'users_by_department': list(users_by_dept),
-            'users_by_status': list(users_by_status),
-            'recent_registrations': recent_users,
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ Admin User Analytics Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        print(f"\n[REPORT ERROR] ❌ Admin User Analytics Error: {str(e)}\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating user analytics: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def admin_department_report(request):
-    """Department-wise report for admin"""
-    try:
-        user = request.user
-        
-        if not check_role_permission(user, ['admin']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Admin access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        departments = Department.objects.filter(status='active')
-        
-        dept_data = []
-        for dept in departments:
-            mentee_count = dept.users.filter(role='mentee').count()
-            mentor_count = dept.mentors.filter(role='mentor').count()
-            active_mentorships = Mentorship.objects.filter(
-                department=dept,
-                status='active'
-            ).count()
-            programs = dept.mentorship_programs.filter(status='active').count()
-            
-            dept_data.append({
-                'department_id': dept.id,
-                'department_name': dept.name,
-                'mentee_count': mentee_count,
-                'mentor_count': mentor_count,
-                'active_mentorships': active_mentorships,
-                'programs': programs
-            })
-        
-        data = {
-            'success': True,
-            'departments': dept_data,
-            'total_departments': len(dept_data),
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ Admin Department Report Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        print(f"\n[REPORT ERROR] ❌ Admin Department Report Error: {str(e)}\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating department report: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# ==================== HR REPORTS ====================
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def hr_dashboard_overview(request):
-    """HR dashboard with onboarding and user management stats"""
-    try:
-        user = request.user
-        
-        if not check_role_permission(user, ['hr', 'admin']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. HR or Admin access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        # Pending approvals
-        pending_users = CustomUser.objects.filter(status='pending').count()
-        
-        # Onboarding stats
-        total_modules = OnboardingModule.objects.filter(is_active=True).count()
-        in_progress = MenteeOnboardingProgress.objects.filter(
-            status='in_progress'
-        ).count()
-        overdue = MenteeOnboardingProgress.objects.filter(
-            due_date__lt=now(),
-            status__in=['not_started', 'in_progress']
-        ).count()
-        
-        # Recent completions (last 7 days)
-        week_ago = now() - timedelta(days=7)
-        recent_completions = MenteeOnboardingProgress.objects.filter(
-            status='completed',
-            completed_at__gte=week_ago
-        ).count()
-        
-        data = {
-            'success': True,
-            'pending_approvals': pending_users,
-            'onboarding': {
-                'total_modules': total_modules,
-                'in_progress': in_progress,
-                'overdue': overdue,
-                'recent_completions': recent_completions
-            },
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ HR Dashboard Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        print(f"\n[REPORT ERROR] ❌ HR Dashboard Error: {str(e)}\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating HR dashboard: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def hr_onboarding_report(request):
-    """Detailed onboarding report for HR"""
-    try:
-        user = request.user
-        
-        if not check_role_permission(user, ['hr', 'admin']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. HR or Admin access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        # Get all modules with completion stats
-        modules = OnboardingModule.objects.filter(is_active=True)
-        
-        module_stats = []
-        for module in modules:
-            total_assigned = MenteeOnboardingProgress.objects.filter(
-                module=module
-            ).count()
-            completed = MenteeOnboardingProgress.objects.filter(
-                module=module,
-                status='completed'
-            ).count()
-            in_progress = MenteeOnboardingProgress.objects.filter(
-                module=module,
-                status='in_progress'
-            ).count()
-            not_started = MenteeOnboardingProgress.objects.filter(
-                module=module,
-                status='not_started'
-            ).count()
-            
-            completion_rate = 0
-            if total_assigned > 0:
-                completion_rate = round((completed / total_assigned) * 100, 2)
-            
-            module_stats.append({
-                'module_id': module.id,
-                'module_title': module.title,
-                'module_type': module.module_type,
-                'total_assigned': total_assigned,
-                'completed': completed,
-                'in_progress': in_progress,
-                'not_started': not_started,
-                'completion_rate': completion_rate
-            })
-        
-        data = {
-            'success': True,
-            'modules': module_stats,
-            'total_modules': len(module_stats),
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ HR Onboarding Report Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        print(f"\n[REPORT ERROR] ❌ HR Onboarding Report Error: {str(e)}\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating onboarding report: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# ==================== MENTOR REPORTS ====================
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def mentor_dashboard_overview(request):
-    """Mentor dashboard with their mentees and sessions"""
-    try:
-        user = request.user
-        
-        if not check_role_permission(user, ['mentor']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Mentor access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        # Get mentor's mentorships
-        mentorships = Mentorship.objects.filter(mentor=user)
-        
-        total_mentees = mentorships.count()
-        active_mentorships = mentorships.filter(status='active').count()
-        
-        # Session statistics
-        total_sessions = MentorshipSession.objects.filter(
-            mentorship__mentor=user
-        ).count()
-        completed_sessions = MentorshipSession.objects.filter(
-            mentorship__mentor=user,
-            status='completed'
-        ).count()
-        upcoming_sessions = MentorshipSession.objects.filter(
-            mentorship__mentor=user,
-            status='scheduled',
-            scheduled_date__gte=now()
-        ).count()
-        
-        # Average rating
-        avg_rating = MentorshipReview.objects.filter(
-            mentorship__mentor=user,
-            reviewer_type='mentee'
-        ).aggregate(avg=Avg('rating'))['avg'] or 0
-        
-        data = {
-            'success': True,
-            'mentor_name': user.full_name,
-            'mentorships': {
-                'total': total_mentees,
-                'active': active_mentorships
-            },
-            'sessions': {
-                'total': total_sessions,
-                'completed': completed_sessions,
-                'upcoming': upcoming_sessions
-            },
-            'average_rating': round(avg_rating, 2),
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ Mentor Dashboard Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        print(f"\n[REPORT ERROR] ❌ Mentor Dashboard Error: {str(e)}\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating mentor dashboard: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def mentor_mentee_progress(request):
-    """Detailed progress report for mentor's mentees"""
-    try:
-        user = request.user
-        
-        if not check_role_permission(user, ['mentor']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Mentor access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        mentorships = Mentorship.objects.filter(mentor=user, status='active')
-        
-        mentee_progress = []
-        for mentorship in mentorships:
-            mentee = mentorship.mentee
-            
-            # Onboarding progress
-            onboarding_total = MenteeOnboardingProgress.objects.filter(
-                mentee=mentee
-            ).count()
-            onboarding_completed = MenteeOnboardingProgress.objects.filter(
-                mentee=mentee,
-                status='completed'
-            ).count()
-            
-            # Session progress
-            sessions_completed = MentorshipSession.objects.filter(
-                mentorship=mentorship,
-                status='completed'
-            ).count()
-            total_sessions = mentorship.get_total_sessions()
-            
-            mentee_progress.append({
-                'mentee_id': mentee.id,
-                'mentee_name': mentee.full_name,
-                'department': mentee.department.name if mentee.department else None,
-                'mentorship_status': mentorship.status,
-                'onboarding': {
-                    'total': onboarding_total,
-                    'completed': onboarding_completed,
-                    'completion_rate': round((onboarding_completed / onboarding_total * 100), 2) if onboarding_total > 0 else 0
-                },
-                'sessions': {
-                    'completed': sessions_completed,
-                    'total': total_sessions,
-                    'progress_percentage': mentorship.get_progress_percentage()
-                }
-            })
-        
-        data = {
-            'success': True,
-            'mentor_name': user.full_name,
-            'mentees': mentee_progress,
-            'total_mentees': len(mentee_progress),
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ Mentor Mentee Progress Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        print(f"\n[REPORT ERROR] ❌ Mentor Mentee Progress Error: {str(e)}\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating mentee progress: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-# ==================== MENTEE REPORTS ====================
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def mentee_dashboard_overview(request):
-    """Mentee dashboard with their progress and sessions"""
-    try:
-        user = request.user
-        
-        if not check_role_permission(user, ['mentee']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Mentee access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        # Mentorship info
-        try:
-            mentorship = Mentorship.objects.get(mentee=user, status='active')
-            has_mentorship = True
-            mentor_name = mentorship.mentor.full_name
-            mentorship_status = mentorship.status
-        except Mentorship.DoesNotExist:
-            has_mentorship = False
-            mentor_name = None
-            mentorship_status = None
-        
-        # Onboarding progress
-        total_modules = MenteeOnboardingProgress.objects.filter(mentee=user).count()
-        completed_modules = MenteeOnboardingProgress.objects.filter(
-            mentee=user,
-            status='completed'
-        ).count()
-        
-        # Session statistics
-        total_sessions = 0
-        completed_sessions = 0
-        upcoming_sessions = 0
-        
-        if has_mentorship:
-            total_sessions = MentorshipSession.objects.filter(
-                mentorship=mentorship
-            ).count()
-            completed_sessions = MentorshipSession.objects.filter(
-                mentorship=mentorship,
-                status='completed'
-            ).count()
-            upcoming_sessions = MentorshipSession.objects.filter(
-                mentorship=mentorship,
-                status='scheduled',
-                scheduled_date__gte=now()
-            ).count()
-        
-        data = {
-            'success': True,
-            'mentee_name': user.full_name,
-            'department': user.department.name if user.department else None,
-            'mentorship': {
-                'has_mentor': has_mentorship,
-                'mentor_name': mentor_name,
-                'status': mentorship_status
-            },
-            'onboarding': {
-                'total_modules': total_modules,
-                'completed': completed_modules,
-                'completion_rate': round((completed_modules / total_modules * 100), 2) if total_modules > 0 else 0
-            },
-            'sessions': {
-                'total': total_sessions,
-                'completed': completed_sessions,
-                'upcoming': upcoming_sessions
-            },
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ Mentee Dashboard Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        print(f"\n[REPORT ERROR] ❌ Mentee Dashboard Error: {str(e)}\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating mentee dashboard: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def mentee_onboarding_detail(request):
-    """Detailed onboarding progress for mentee"""
-    try:
-        user = request.user
-        
-        if not check_role_permission(user, ['mentee']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Mentee access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        # Get all onboarding progress
-        progress_records = MenteeOnboardingProgress.objects.filter(
-            mentee=user
-        ).select_related('module')
-        
-        modules_data = []
-        for progress in progress_records:
-            # Get checklist progress
-            total_checklist = OnboardingChecklist.objects.filter(
-                module=progress.module
-            ).count()
-            completed_checklist = MenteeChecklistProgress.objects.filter(
-                mentee=user,
-                checklist_item__module=progress.module,
-                is_completed=True
-            ).count()
-            
-            modules_data.append({
-                'module_id': progress.module.id,
-                'module_title': progress.module.title,
-                'module_type': progress.module.module_type,
-                'description': progress.module.description,
-                'status': progress.status,
-                'progress_percentage': progress.progress_percentage,
-                'started_at': progress.started_at,
-                'completed_at': progress.completed_at,
-                'due_date': progress.due_date,
-                'is_overdue': progress.is_overdue(),
-                'time_spent_minutes': progress.time_spent_minutes,
-                'estimated_duration': progress.module.duration_minutes,
-                'checklist': {
-                    'total_items': total_checklist,
-                    'completed_items': completed_checklist,
-                    'completion_rate': round((completed_checklist / total_checklist * 100), 2) if total_checklist > 0 else 0
-                }
-            })
-        
-        data = {
-            'success': True,
-            'mentee_name': user.full_name,
-            'department': user.department.name if user.department else None,
-            'total_modules': len(modules_data),
-            'modules': modules_data,
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ Mentee Onboarding Detail Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Exception as e:
-        print(f"\n[REPORT ERROR] ❌ Mentee Onboarding Detail Error: {str(e)}\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating onboarding detail: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def mentee_session_history(request):
-    """Session history for mentee"""
-    try:
-        user = request.user
-        
-        if not check_role_permission(user, ['mentee']):
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Mentee access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        # Get mentorship - handle case where mentee has no active mentorship
-        mentorship = None
-        try:
-            mentorship = Mentorship.objects.get(mentee=user, status='active')
-        except Mentorship.DoesNotExist:
-            # Return empty session history if no active mentorship
-            print("\n" + "="*80)
-            print("[REPORT LOG] ℹ️ Mentee has no active mentorship")
-            print("="*80 + "\n")
-            return Response({
-                'success': True,
-                'mentee_name': user.full_name,
-                'has_mentorship': False,
-                'mentor_name': None,
-                'sessions': [],
-                'total_sessions': 0,
-                'completed_sessions': 0,
-                'generated_at': now()
-            }, status=status.HTTP_200_OK)
-        except Exception as e:
-            print(f"\n[REPORT ERROR] ❌ Error fetching mentorship: {str(e)}\n")
-            raise
-        
-        # Get all sessions for this mentorship
-        sessions = MentorshipSession.objects.filter(
-            mentorship=mentorship
-        ).select_related('program', 'session_template').order_by('-scheduled_date')
-        
-        sessions_data = []
-        for session in sessions:
-            sessions_data.append({
-                'session_id': session.id,
-                'program_name': session.program.name if session.program else None,
-                'session_number': session.program_session_number,
-                'template_title': session.session_template.title if session.session_template else None,
-                'status': session.status,
-                'scheduled_date': session.scheduled_date,
-                'actual_date': session.actual_date,
-                'duration_minutes': session.duration_minutes,
-                'agenda': session.agenda,
-                'notes': session.notes,
-                'mentor_feedback': session.mentor_feedback,
-                'mentee_feedback': session.mentee_feedback,
-                'meeting_link': session.meeting_link,
-                'location': session.location
-            })
-        
-        completed_count = sessions.filter(status='completed').count()
-        
-        data = {
-            'success': True,
-            'mentee_name': user.full_name,
-            'has_mentorship': True,
-            'mentor_name': mentorship.mentor.full_name,
-            'sessions': sessions_data,
-            'total_sessions': len(sessions_data),
-            'completed_sessions': completed_count,
-            'generated_at': now()
-        }
-        
-        print("\n" + "="*80)
-        print("[REPORT LOG] ✅ Mentee Session History Generated")
-        print(f"Data: {data}")
-        print("="*80 + "\n")
-        
-        return Response(data, status=status.HTTP_200_OK)
-        
-    except Mentorship.DoesNotExist:
-        # This should be caught above, but just in case
-        return Response({
-            'success': True,
-            'mentee_name': user.full_name,
-            'has_mentorship': False,
-            'mentor_name': None,
-            'sessions': [],
-            'total_sessions': 0,
-            'completed_sessions': 0,
-            'generated_at': now()
-        }, status=status.HTTP_200_OK)
-    except Exception as e:
-        import traceback
-        error_traceback = traceback.format_exc()
-        print("\n" + "="*80)
-        print(f"[REPORT LOG] ❌ ERROR: Error in mentee_session_history: {str(e)}")
-        print(f"Traceback:\n{error_traceback}")
-        print("="*80 + "\n")
-        return Response({
-            'success': False,
-            'message': f'Error generating session history: {str(e)}'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
-
-
-
-
-
-
-# reportApp/views.py - FIXED VERSION
-
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework import status as http_status  # Renamed to avoid conflict
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
-from rest_framework import status
-from django.db.models import Q, Count, Sum, Avg, F, Case, When, IntegerField
-from django.utils.timezone import now
-from datetime import timedelta, datetime, date
+from django.db.models import Count, Avg, Q, Sum
+from datetime import datetime, timedelta
+from django.utils import timezone
+import csv
 import json
+from io import StringIO, BytesIO
+from django.http import HttpResponse
+from django.db import connection
+import logging
+
+
+import csv
+from io import StringIO, BytesIO
+from datetime import datetime
+from django.utils import timezone
+from django.http import HttpResponse
+import logging
+
+# For PDF export - ReportLab imports
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-import csv
-import io
-from django.http import HttpResponse
-import pandas as pd
-import traceback
+from reportlab.pdfgen import canvas
 
-from userApp.models import CustomUser
+# Import HTTP status constants
+from rest_framework import status as http_status
+
+# Import models
+from userApp.models import CustomUser, UserLog
 from departmentApp.models import Department
-from onboarding.models import (
-    OnboardingModule, MenteeOnboardingProgress,
-    OnboardingChecklist, MenteeChecklistProgress
-)
-from mentorshipApp.models import (
-    Mentorship, MentorshipSession, MentorshipProgram,
-    MentorshipReview
-)
+from incidentApp.models import Incident
+from complianceAuditApp.models import ComplianceAudit, ControlAssessment
+from trainingApp.models import Training
+from trainingCandidateApp.models import Candidate
+from learningProgressApp.models import LearningProgress
+from complianceAuditApp.models import ComplianceStandard
+from .serializers import ReportFilterSerializer
+
+logger = logging.getLogger(__name__)
 
 
-# ==================== HELPER FUNCTIONS ====================
-def check_role_permission(user, allowed_roles):
-    """Check if user has required role permissions"""
-    try:
-        return user.role in allowed_roles if hasattr(user, 'role') else False
-    except Exception as e:
-        print(f"[PERMISSION ERROR] ❌ Role check failed: {str(e)}")
-        return False
-
-
-def log_report_generation(report_type, filters, record_count, user):
-    """Log report generation details to terminal"""
-    timestamp = now().strftime("%Y-%m-%d %H:%M:%S")
-    print("\n" + "="*100)
-    print(f"[REPORT GENERATED] ✅")
-    print(f"Timestamp: {timestamp}")
-    print(f"Report Type: {report_type}")
-    print(f"Generated By: {user.full_name} ({user.role})")
-    print(f"Filters: {json.dumps(filters, indent=2, default=str)}")
-    print(f"Records Found: {record_count}")
-    print("="*100 + "\n")
-
-
-def log_report_error(error_type, error_message, user=None, report_type=None):
-    """Log report errors to terminal with detailed traceback"""
-    timestamp = now().strftime("%Y-%m-%d %H:%M:%S")
-    print("\n" + "="*100)
-    print(f"[{error_type}] ❌")
-    print(f"Timestamp: {timestamp}")
-    if user:
-        print(f"User: {user.full_name} ({user.role})")
-    if report_type:
-        print(f"Report Type: {report_type}")
-    print(f"Error: {error_message}")
-    print("\nTraceback:")
-    print("-"*50)
-    traceback.print_exc()
-    print("-"*50)
-    print("="*100 + "\n")
-
-
-def safe_date_format(date_value):
-    """Safely format date/datetime to string"""
-    if date_value is None:
-        return ''
-    if isinstance(date_value, str):
-        return date_value
-    if isinstance(date_value, (datetime, date)):
-        return date_value.strftime('%Y-%m-%d')
-    return str(date_value)
-
-
-def safe_datetime_format(datetime_value):
-    """Safely format datetime to string with time"""
-    if datetime_value is None:
-        return ''
-    if isinstance(datetime_value, str):
-        return datetime_value
-    if isinstance(datetime_value, datetime):
-        return datetime_value.strftime('%Y-%m-%d %H:%M:%S')
-    if isinstance(datetime_value, date):
-        return datetime_value.strftime('%Y-%m-%d')
-    return str(datetime_value)
-
-
-def safe_float(value, default=0.0):
-    """Safely convert value to float"""
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def safe_int(value, default=0):
-    """Safely convert value to int"""
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except (ValueError, TypeError):
-        return default
-
-
-def validate_date_format(date_str, date_name):
-    """Validate and parse date strings"""
-    try:
-        if not date_str:
-            return None, None
-        
-        if isinstance(date_str, datetime):
-            return date_str, None
-        
-        # Try multiple date formats
-        date_formats = ['%Y-%m-%d', '%Y/%m/%d', '%d-%m-%Y', '%d/%m/%Y', '%Y-%m-%d %H:%M:%S']
-        
-        for date_format in date_formats:
-            try:
-                parsed_date = datetime.strptime(date_str, date_format)
-                return parsed_date, None
-            except ValueError:
-                continue
-        
-        return None, f"Invalid {date_name} format: {date_str}. Use YYYY-MM-DD"
+# ==================== BASE SERVICE ====================
+class BaseDashboardService:
+    """Base service class for dashboard data operations"""
     
-    except Exception as e:
-        return None, f"Error parsing {date_name}: {str(e)}"
-
-
-def validate_filters(filters, report_type):
-    """Validate report filters"""
-    validation_errors = []
+    def __init__(self, user):
+        self.user = user
+        self.today = timezone.now()
     
-    # Validate date filters
-    start_date = filters.get('start_date')
-    end_date = filters.get('end_date')
-    
-    if start_date or end_date:
-        if start_date and not end_date:
-            validation_errors.append("End date is required when start date is provided")
-        elif end_date and not start_date:
-            validation_errors.append("Start date is required when end date is provided")
-        elif start_date and end_date:
-            parsed_start, start_error = validate_date_format(start_date, 'start_date')
-            parsed_end, end_error = validate_date_format(end_date, 'end_date')
-            
-            if start_error:
-                validation_errors.append(start_error)
-            if end_error:
-                validation_errors.append(end_error)
-            
-            if parsed_start and parsed_end and parsed_start > parsed_end:
-                validation_errors.append("Start date cannot be after end date")
-    
-    # Validate role filter
-    role_filter = filters.get('role')
-    valid_roles = ['admin', 'mentor', 'mentee', 'hr']
-    if role_filter and role_filter not in valid_roles:
-        validation_errors.append(f"Invalid role: {role_filter}. Valid roles: {', '.join(valid_roles)}")
-    
-    # Validate status filter
-    status_filter = filters.get('status')
-    if status_filter:
-        if report_type == 'users':
-            valid_statuses = ['pending', 'approved', 'rejected', 'active', 'inactive']
-            if status_filter not in valid_statuses:
-                validation_errors.append(f"Invalid user status: {status_filter}")
-        elif report_type == 'mentorships':
-            valid_statuses = ['pending', 'active', 'completed', 'paused', 'cancelled']
-            if status_filter not in valid_statuses:
-                validation_errors.append(f"Invalid mentorship status: {status_filter}")
-    
-    return validation_errors
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def generate_report(request):
-    """Generate custom reports based on filters - FIXED VERSION"""
-    try:
-        user = request.user
+    def get_date_range(self, timeframe='month', start_date=None, end_date=None):
+        """Get date range based on timeframe or custom dates"""
+        end_date = self.today
         
-        # Validate user permissions
-        if not check_role_permission(user, ['admin', 'hr']):
-            log_report_error("PERMISSION DENIED", 
-                           f"User {user.full_name} does not have permission to generate reports", 
-                           user)
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Admin or HR access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        # Validate request data
-        if not request.data:
-            log_report_error("INVALID REQUEST", "Request data is empty", user)
-            return Response({
-                'success': False,
-                'message': 'Request data is required'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        data = request.data
-        report_type = data.get('report_type', 'users')
-        filters = data.get('filters', {})
-        
-        # Validate report type
-        valid_report_types = ['users', 'mentorships', 'departments', 'onboarding', 'sessions']
-        if report_type not in valid_report_types:
-            log_report_error("INVALID REPORT TYPE", 
-                           f"Invalid report type: {report_type}", 
-                           user, report_type)
-            return Response({
-                'success': False,
-                'message': f'Invalid report type. Valid types: {", ".join(valid_report_types)}'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Validate filters
-        filter_errors = validate_filters(filters, report_type)
-        if filter_errors:
-            log_report_error("FILTER VALIDATION ERROR", 
-                           f"Filter validation failed: {filter_errors}", 
-                           user, report_type)
-            return Response({
-                'success': False,
-                'message': 'Filter validation errors',
-                'errors': filter_errors
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Parse date filters
-        start_date_str = filters.get('start_date')
-        end_date_str = filters.get('end_date')
-        start_date = None
-        end_date = None
-        
-        if start_date_str:
-            start_date, start_error = validate_date_format(start_date_str, 'start_date')
-            if start_error:
-                return Response({
-                    'success': False,
-                    'message': start_error
-                }, status=status.HTTP_400_BAD_REQUEST)
-        
-        if end_date_str:
-            end_date, end_error = validate_date_format(end_date_str, 'end_date')
-            if end_error:
-                return Response({
-                    'success': False,
-                    'message': end_error
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            if end_date:
-                end_date = end_date.replace(hour=23, minute=59, second=59)
-        
-        # Initialize query filters
-        query_filters = Q()
-        
-        # Apply date filters
         if start_date and end_date:
-            query_filters &= Q(assigned_at__range=[start_date, end_date])
-        elif start_date:
-            query_filters &= Q(assigned_at__gte=start_date)
-        elif end_date:
-            query_filters &= Q(assigned_at__lte=end_date)
+            if isinstance(start_date, str):
+                start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+            if isinstance(end_date, str):
+                end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+            
+            start_date = timezone.make_aware(datetime.combine(start_date, datetime.min.time()))
+            end_date = timezone.make_aware(datetime.combine(end_date, datetime.max.time()))
+        else:
+            if timeframe == 'today':
+                start_date = end_date - timedelta(days=1)
+            elif timeframe == 'week':
+                start_date = end_date - timedelta(weeks=1)
+            elif timeframe == 'month':
+                start_date = end_date - timedelta(days=30)
+            elif timeframe == 'quarter':
+                start_date = end_date - timedelta(days=90)
+            elif timeframe == 'year':
+                start_date = end_date - timedelta(days=365)
+            else:  # Default to month
+                start_date = end_date - timedelta(days=30)
         
-        # Apply role filter
-        role_filter = filters.get('role')
-        if role_filter:
-            query_filters &= Q(role=role_filter)
+        return start_date, end_date
+    
+    def get_department_filter_for_users(self, department_id=None):
+        """Get department filter for users based on user role"""
+        if department_id == '' or department_id is None:
+            department_id = None
         
-        # Apply status filter
-        status_filter = filters.get('status')
-        if status_filter:
-            if report_type == 'users':
-                if status_filter in ['active', 'inactive']:
-                    query_filters &= Q(availability_status=status_filter)
-                else:
-                    query_filters &= Q(status=status_filter)
+        # For users who can see all data
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            if department_id:
+                # Filter by specific department
+                return Q(department__id=department_id) | Q(departments__id=department_id)
+            # No department filter - show all
+            return Q()
+        
+        # For security analysts - only their assigned departments
+        elif self.user.role == 'security_analyst':
+            dept_ids = list(self.user.departments.values_list('id', flat=True))
+            if not dept_ids:
+                return Q(id__in=[])
+            
+            if department_id and department_id in dept_ids:
+                return Q(department__id=department_id) | Q(departments__id=department_id)
+            
+            return Q(department__id__in=dept_ids) | Q(departments__id__in=dept_ids)
+        
+        # For employees - only their own department
+        elif self.user.role == 'employee':
+            if self.user.department:
+                if department_id and department_id == str(self.user.department.id):
+                    return Q(department__id=self.user.department.id)
+                return Q(department__id=self.user.department.id)
             else:
-                query_filters &= Q(status=status_filter)
+                return Q(id__in=[])
+        
+        # Default for other roles
+        return Q()
+    
+    def get_department_filter_for_incidents(self, department_id=None):
+        """Get department filter for incidents based on user role"""
+        if department_id == '' or department_id is None:
+            department_id = None
+        
+        # For users who can see all data
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            if department_id:
+                return Q(department__id=department_id)
+            return Q()
+        
+        # For security analysts - only their assigned departments
+        elif self.user.role == 'security_analyst':
+            dept_ids = list(self.user.departments.values_list('id', flat=True))
+            if not dept_ids:
+                return Q(id__in=[])
+            
+            if department_id and department_id in dept_ids:
+                return Q(department__id=department_id)
+            
+            return Q(department__id__in=dept_ids)
+        
+        # For employees - only their own department
+        elif self.user.role == 'employee':
+            if self.user.department:
+                if department_id and department_id == str(self.user.department.id):
+                    return Q(department__id=self.user.department.id)
+                return Q(department__id=self.user.department.id)
+            else:
+                return Q(id__in=[])
+        
+        return Q()
+    
+    def get_user_queryset(self, department_id=None):
+        """Get filtered user queryset"""
+        dept_filter = self.get_department_filter_for_users(department_id)
+        
+        qs = CustomUser.objects.filter(is_active=True)
         
         # Apply department filter
-        department_filter = filters.get('department')
-        if department_filter:
-            if isinstance(department_filter, str):
-                query_filters &= Q(department__name__icontains=department_filter)
+        if dept_filter:
+            qs = qs.filter(dept_filter)
+        
+        return qs.distinct()
+    
+    def get_incident_queryset(self, start_date, end_date, department_id=None, incident_status=None, severity=None):
+        """Get filtered incident queryset"""
+        dept_filter = self.get_department_filter_for_incidents(department_id)
+        
+        # Start with base queryset filtered by date
+        qs = Incident.objects.filter(
+            created_at__gte=start_date,
+            created_at__lte=end_date
+        )
+        
+        # Apply department filter
+        if dept_filter:
+            qs = qs.filter(dept_filter)
+        
+        # Apply additional filters (using incident_status instead of status)
+        if incident_status:
+            qs = qs.filter(status=incident_status)
+        if severity:
+            qs = qs.filter(severity=severity)
+        
+        return qs.distinct()
+    
+    def get_audit_queryset(self, start_date, end_date, department_id=None):
+        """Get filtered audit queryset"""
+        # For audits, check user's access to departments
+        qs = ComplianceAudit.objects.filter(
+            created_at__gte=start_date,
+            created_at__lte=end_date
+        )
+        
+        # Get accessible departments for user
+        accessible_department_ids = self.get_accessible_department_ids(department_id)
+        
+        if accessible_department_ids:
+            qs = qs.filter(departments__id__in=accessible_department_ids)
+        else:
+            # If no accessible departments, user can only see audits with no departments
+            qs = qs.filter(departments__isnull=True)
+        
+        return qs.distinct()
+    
+    def get_accessible_department_ids(self, department_id=None):
+        """Get list of department IDs that the user can access"""
+        if department_id and department_id != '':
+            # Check if user can access this specific department
+            if self.can_access_department(department_id):
+                return [department_id]
+            return []
+        
+        # Get all accessible departments
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            return list(Department.objects.filter(status='active').values_list('id', flat=True))
+        elif self.user.role == 'security_analyst':
+            return list(self.user.departments.filter(status='active').values_list('id', flat=True))
+        elif self.user.role == 'employee' and self.user.department:
+            return [self.user.department.id]
+        
+        return []
+    
+    def can_access_department(self, department_id):
+        """Check if user can access a specific department"""
+        try:
+            department = Department.objects.get(id=department_id, status='active')
+            
+            if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+                return True
+            elif self.user.role == 'security_analyst':
+                return self.user.departments.filter(id=department_id).exists()
+            elif self.user.role == 'employee':
+                return self.user.department and self.user.department.id == department_id
+            
+            return False
+        except Department.DoesNotExist:
+            return False
+
+
+# ==================== DASHBOARD DATA SERVICE ====================
+class DashboardDataService(BaseDashboardService):
+    """Service for fetching real dashboard data from database"""
+    
+    def get_user_statistics(self, start_date, end_date, department_id=None):
+        """Get user statistics from real database data"""
+        user_qs = self.get_user_queryset(department_id)
+        
+        total_users = user_qs.count()
+        active_users = user_qs.filter(availability_status='active').count()
+        pending_users = user_qs.filter(status='pending').count()
+        
+        return {
+            'total_users': total_users,
+            'active_users': active_users,
+            'pending_users': pending_users
+        }
+    
+    def get_incident_statistics(self, start_date, end_date, department_id=None):
+        """Get incident statistics from real database data"""
+        incident_qs = self.get_incident_queryset(start_date, end_date, department_id)
+        
+        total_incidents = incident_qs.count()
+        open_incidents = incident_qs.exclude(status__in=['resolved', 'closed']).count()
+        critical_incidents = incident_qs.filter(severity__in=['critical', 'high']).count()
+        
+        return {
+            'total_incidents': total_incidents,
+            'open_incidents': open_incidents,
+            'critical_incidents': critical_incidents
+        }
+    
+    def get_audit_statistics(self, start_date, end_date, department_id=None):
+        """Get audit statistics from real database data"""
+        audit_qs = self.get_audit_queryset(start_date, end_date, department_id)
+        
+        total_audits = audit_qs.count()
+        active_audits = audit_qs.filter(status='in_progress').count()
+        
+        # Calculate compliance score
+        completed_audits = audit_qs.filter(status='completed', overall_score__isnull=False)
+        if completed_audits.exists():
+            avg_score = completed_audits.aggregate(Avg('overall_score'))['overall_score__avg'] or 100.0
+        else:
+            # Calculate from controls
+            accessible_dept_ids = self.get_accessible_department_ids(department_id)
+            if accessible_dept_ids:
+                control_qs = ControlAssessment.objects.filter(
+                    audit__departments__id__in=accessible_dept_ids,
+                    audit__created_at__gte=start_date,
+                    audit__created_at__lte=end_date
+                )
             else:
-                query_filters &= Q(department_id=department_filter)
-        
-        # Initialize report data and summary
-        report_data = []
-        summary = {}
-        
-        # Generate report based on type
-        try:
-            if report_type == 'users':
-                users = CustomUser.objects.filter(query_filters).select_related('department')
-                
-                report_data = []
-                for user_obj in users:
-                    report_data.append({
-                        'id': user_obj.id,
-                        'full_name': user_obj.full_name or '',
-                        'email': user_obj.email or '',
-                        'phone_number': user_obj.phone_number or '',
-                        'role': user_obj.role or '',
-                        'status': user_obj.status or '',
-                        'availability_status': user_obj.availability_status or '',
-                        'department': user_obj.department.name if user_obj.department else 'N/A',
-                        'work_mail_address': user_obj.work_mail_address or '',
-                        'created_at': safe_datetime_format(user_obj.created_at),
-                        'is_active': user_obj.is_active,
-                        'is_staff': user_obj.is_staff
-                    })
-                
-                summary = {
-                    'total_users': users.count(),
-                    'by_role': list(users.values('role').annotate(count=Count('id'))),
-                    'by_status': list(users.values('status').annotate(count=Count('id'))),
-                    'by_department': list(users.values('department__name').annotate(count=Count('id'))),
-                    'active_count': users.filter(availability_status='active').count(),
-                    'inactive_count': users.filter(availability_status='inactive').count(),
-                    'staff_count': users.filter(is_staff=True).count()
-                }
-                
-            elif report_type == 'mentorships':
-                mentorships = Mentorship.objects.filter(query_filters).select_related(
-                    'mentor', 'mentee', 'department', 'current_program'
+                control_qs = ControlAssessment.objects.filter(
+                    audit__departments__isnull=True,
+                    audit__created_at__gte=start_date,
+                    audit__created_at__lte=end_date
                 )
-                
-                report_data = []
-                for mentorship in mentorships:
-                    # Calculate progress safely
-                    try:
-                        progress_percentage = mentorship.get_progress_percentage()
-                    except:
-                        progress_percentage = 0
-                    
-                    try:
-                        sessions_completed = mentorship.get_sessions_completed()
-                    except:
-                        sessions_completed = 0
-                    
-                    try:
-                        total_sessions = mentorship.get_total_sessions()
-                    except:
-                        total_sessions = 0
-                    
-                    report_data.append({
-                        'id': mentorship.id,
-                        'mentor_name': mentorship.mentor.full_name or '',
-                        'mentor_email': mentorship.mentor.email or '',
-                        'mentee_name': mentorship.mentee.full_name or '',
-                        'mentee_email': mentorship.mentee.email or '',
-                        'department': mentorship.department.name or '',
-                        'status': mentorship.status or '',
-                        'start_date': safe_date_format(mentorship.start_date),
-                        'expected_end_date': safe_date_format(mentorship.expected_end_date),
-                        'actual_end_date': safe_date_format(mentorship.actual_end_date),
-                        'progress_percentage': safe_float(progress_percentage),
-                        'sessions_completed': safe_int(sessions_completed),
-                        'total_sessions': safe_int(total_sessions),
-                        'rating': safe_float(mentorship.rating),
-                        'current_program': mentorship.current_program.name if mentorship.current_program else 'N/A',
-                        'created_at': safe_datetime_format(mentorship.created_at)
-                    })
-                
-                # Calculate average progress manually
-                total_progress = 0
-                progress_count = 0
-                for m in mentorships:
-                    try:
-                        prog = m.get_progress_percentage()
-                        if prog is not None:
-                            total_progress += prog
-                            progress_count += 1
-                    except:
-                        pass
-                
-                avg_progress = (total_progress / progress_count) if progress_count > 0 else 0
-                
-                summary = {
-                    'total_mentorships': mentorships.count(),
-                    'active': mentorships.filter(status='active').count(),
-                    'completed': mentorships.filter(status='completed').count(),
-                    'pending': mentorships.filter(status='pending').count(),
-                    'cancelled': mentorships.filter(status='cancelled').count(),
-                    'paused': mentorships.filter(status='paused').count(),
-                    'average_rating': safe_float(mentorships.aggregate(avg=Avg('rating'))['avg']),
-                    'average_progress': round(avg_progress, 2),
-                    'by_department': list(mentorships.values('department__name').annotate(count=Count('id')))
-                }
-                
-            elif report_type == 'departments':
-                departments = Department.objects.filter(status='active')
-                
-                if department_filter:
-                    if isinstance(department_filter, str):
-                        departments = departments.filter(name__icontains=department_filter)
-                    else:
-                        departments = departments.filter(id=department_filter)
-                
-                report_data = []
-                for dept in departments:
-                    mentee_count = dept.users.filter(role='mentee').count()
-                    mentor_count = dept.mentors.filter(role='mentor').count()
-                    active_mentorships = Mentorship.objects.filter(
-                        department=dept,
-                        status='active'
-                    ).count()
-                    programs = dept.mentorship_programs.filter(status='active').count()
-                    total_users = mentee_count + mentor_count
-                    
-                    report_data.append({
-                        'id': dept.id,
-                        'name': dept.name or '',
-                        'description': dept.description or '',
-                        'status': dept.status or '',
-                        'mentee_count': mentee_count,
-                        'mentor_count': mentor_count,
-                        'total_users': total_users,
-                        'active_mentorships': active_mentorships,
-                        'programs': programs,
-                        'utilization_rate': round((total_users / max(1, total_users)) * 100, 2) if total_users > 0 else 0,
-                        'created_at': safe_datetime_format(dept.created_at),
-                        'created_by': dept.created_by.full_name if dept.created_by else 'N/A'
-                    })
-                
-                summary = {
-                    'total_departments': departments.count(),
-                    'total_mentees': sum(dept['mentee_count'] for dept in report_data),
-                    'total_mentors': sum(dept['mentor_count'] for dept in report_data),
-                    'total_active_mentorships': sum(dept['active_mentorships'] for dept in report_data),
-                    'total_programs': sum(dept['programs'] for dept in report_data),
-                    'average_utilization': round(sum(dept['utilization_rate'] for dept in report_data) / max(1, len(report_data)), 2)
-                }
-                
-            elif report_type == 'onboarding':
-                progress_records = MenteeOnboardingProgress.objects.filter(
-                    query_filters
-                ).select_related('mentee', 'module', 'assigned_by')
-                
-                report_data = []
-                for progress in progress_records:
-                    try:
-                        is_overdue = progress.is_overdue()
-                    except:
-                        is_overdue = False
-                    
-                    report_data.append({
-                        'id': progress.id,
-                        'mentee_name': progress.mentee.full_name or '',
-                        'mentee_email': progress.mentee.email or '',
-                        'module_title': progress.module.title or '',
-                        'module_type': progress.module.module_type or '',
-                        'status': progress.status or '',
-                        'progress_percentage': safe_int(progress.progress_percentage),
-                        'started_at': safe_datetime_format(progress.started_at),
-                        'completed_at': safe_datetime_format(progress.completed_at),
-                        'due_date': safe_datetime_format(progress.due_date),
-                        'is_overdue': is_overdue,
-                        'time_spent_minutes': safe_int(progress.time_spent_minutes),
-                        'assigned_by': progress.assigned_by.full_name if progress.assigned_by else 'N/A',
-                        'assigned_at': safe_datetime_format(progress.assigned_at),
-                        'last_updated': safe_datetime_format(progress.last_updated),
-                        'notes': (progress.notes[:100] + '...') if progress.notes and len(progress.notes) > 100 else (progress.notes or '')
-                    })
-                
-                summary = {
-                    'total_records': progress_records.count(),
-                    'completed': progress_records.filter(status='completed').count(),
-                    'in_progress': progress_records.filter(status='in_progress').count(),
-                    'not_started': progress_records.filter(status='not_started').count(),
-                    'overdue': progress_records.filter(status='overdue').count(),
-                    'needs_attention': progress_records.filter(status='needs_attention').count(),
-                    'off_track': progress_records.filter(status='off_track').count(),
-                    'paused': progress_records.filter(status='paused').count(),
-                    'average_progress': safe_float(progress_records.aggregate(avg=Avg('progress_percentage'))['avg']),
-                    'average_time_spent': safe_float(progress_records.aggregate(avg=Avg('time_spent_minutes'))['avg'])
-                }
-                
-            elif report_type == 'sessions':
-                sessions = MentorshipSession.objects.filter(query_filters).select_related(
-                    'mentorship', 'mentorship__mentor', 'mentorship__mentee', 'program', 'session_template'
-                )
-                
-                report_data = []
-                for session in sessions:
-                    report_data.append({
-                        'id': session.id,
-                        'mentor_name': session.mentorship.mentor.full_name or '',
-                        'mentee_name': session.mentorship.mentee.full_name or '',
-                        'program_name': session.program.name if session.program else 'N/A',
-                        'session_template': session.session_template.title if session.session_template else 'N/A',
-                        'session_number': safe_int(session.program_session_number),
-                        'overall_session_number': safe_int(session.overall_session_number),
-                        'status': session.status or '',
-                        'scheduled_date': safe_datetime_format(session.scheduled_date),
-                        'actual_date': safe_datetime_format(session.actual_date),
-                        'duration_minutes': safe_int(session.duration_minutes),
-                        'agenda': (session.agenda[:200] + '...') if session.agenda and len(session.agenda) > 200 else (session.agenda or ''),
-                        'mentor_feedback': (session.mentor_feedback[:200] + '...') if session.mentor_feedback and len(session.mentor_feedback) > 200 else (session.mentor_feedback or ''),
-                        'mentee_feedback': (session.mentee_feedback[:200] + '...') if session.mentee_feedback and len(session.mentee_feedback) > 200 else (session.mentee_feedback or ''),
-                        'mentor_rating': safe_int(session.mentor_rating),
-                        'meeting_link': session.meeting_link or '',
-                        'location': session.location or '',
-                        'created_at': safe_datetime_format(session.created_at)
-                    })
-                
-                summary = {
-                    'total_sessions': sessions.count(),
-                    'completed': sessions.filter(status='completed').count(),
-                    'scheduled': sessions.filter(status='scheduled').count(),
-                    'cancelled': sessions.filter(status='cancelled').count(),
-                    'rescheduled': sessions.filter(status='rescheduled').count(),
-                    'no_show': sessions.filter(status='no_show').count(),
-                    'average_duration': safe_float(sessions.aggregate(avg=Avg('duration_minutes'))['avg']),
-                    'average_rating': safe_float(sessions.aggregate(avg=Avg('mentor_rating'))['avg']),
-                    'completion_rate': round((sessions.filter(status='completed').count() / max(1, sessions.count())) * 100, 2),
-                    'by_program': list(sessions.values('program__name').annotate(count=Count('id')))
-                }
             
-            # Prepare result
-            result = {
-                'success': True,
-                'report_type': report_type,
-                'filters': filters,
-                'data': report_data,
-                'summary': summary,
-                'generated_at': safe_datetime_format(now()),
-                'generated_by': user.full_name,
-                'user_role': user.role,
-                'records_count': len(report_data),
-                'organization': 'BigTech Solutions Ltd (BTSL)',
-                'system': 'Digital Mentorship System'
-            }
-            
-            # Log successful generation
-            log_report_generation(report_type, filters, len(report_data), user)
-            
-            # Print sample data to terminal
-            if report_data:
-                print("\n" + "="*80)
-                print(f"SAMPLE DATA - First 3 records of {len(report_data)}:")
-                print("="*80)
-                for i, record in enumerate(report_data[:3]):
-                    print(f"\nRecord {i+1}:")
-                    for key, value in list(record.items())[:5]:
-                        print(f"  {key}: {value}")
-                if len(report_data) > 3:
-                    print(f"\n... and {len(report_data) - 3} more records")
-                print("="*80 + "\n")
-            
-            return Response(result, status=status.HTTP_200_OK)
-            
-        except Exception as e:
-            log_report_error("DATA GENERATION ERROR", str(e), user, report_type)
-            return Response({
-                'success': False,
-                'message': f'Error generating report data: {str(e)}',
-                'report_type': report_type,
-                'error_details': traceback.format_exc()
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            total_controls = control_qs.count()
+            if total_controls > 0:
+                compliant_controls = control_qs.filter(status='compliant').count()
+                avg_score = (compliant_controls / total_controls) * 100
+            else:
+                avg_score = 100.0
         
-    except Exception as e:
-        log_report_error("GENERAL REPORT ERROR", str(e), request.user if hasattr(request, 'user') else None)
-        return Response({
-            'success': False,
-            'message': f'Unexpected error generating report: {str(e)}',
-            'error_details': traceback.format_exc()
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def export_report(request):
-    """Export report in various formats (PDF, Excel, CSV) - FIXED VERSION"""
-    try:
-        user = request.user
+        return {
+            'total_audits': total_audits,
+            'active_audits': active_audits,
+            'completed_audits': audit_qs.filter(status='completed').count(),
+            'compliance_score': round(avg_score, 2)
+        }
+    
+    def get_training_statistics(self, department_id=None):
+        """Get training statistics from real database data - FIXED VERSION"""
+        user_qs = self.get_user_queryset(department_id)
+        user_ids = user_qs.values_list('id', flat=True)
         
-        # Validate user permissions
-        if not check_role_permission(user, ['admin', 'hr']):
-            log_report_error("EXPORT PERMISSION DENIED", 
-                           f"User {user.full_name} does not have permission to export reports", 
-                           user)
-            return Response({
-                'success': False,
-                'message': 'Permission denied. Admin or HR access required.'
-            }, status=status.HTTP_403_FORBIDDEN)
+        # Get trainings for these users - Using correct relationship
+        candidate_trainings = Candidate.objects.filter(
+            learner__in=user_ids
+        ).values_list('training_id', flat=True).distinct()
         
-        # Validate request data
-        if not request.data:
-            log_report_error("EXPORT INVALID REQUEST", "Export request data is empty", user)
-            return Response({
-                'success': False,
-                'message': 'Export data is required'
-            }, status=status.HTTP_400_BAD_REQUEST)
+        trainings = Training.objects.filter(id__in=candidate_trainings)
+        total_trainings = trainings.count()
         
-        data = request.data
-        export_format = data.get('format', 'pdf')
-        report_data = data.get('data', {})
+        # Active candidates (candidates with pending status)
+        active_candidates = Candidate.objects.filter(
+            learner__in=user_ids,
+            status='pending'
+        ).count()
         
-        # Validate export format
-        valid_formats = ['pdf', 'excel', 'csv']
-        if export_format not in valid_formats:
-            log_report_error("INVALID EXPORT FORMAT", 
-                           f"Invalid export format: {export_format}", 
-                           user)
-            return Response({
-                'success': False,
-                'message': f'Invalid export format. Valid formats: {", ".join(valid_formats)}'
-            }, status=status.HTTP_400_BAD_REQUEST)
+        return {
+            'total_trainings': total_trainings,
+            'active_candidates': active_candidates
+        }
+    
+    def get_risk_score(self, start_date, end_date, department_id=None):
+        """Calculate real risk score from incidents"""
+        incident_qs = self.get_incident_queryset(start_date, end_date, department_id)
         
-        # Validate report data structure
-        if not report_data or not isinstance(report_data, dict):
-            log_report_error("INVALID REPORT DATA", "Report data is missing or invalid", user)
-            return Response({
-                'success': False,
-                'message': 'Invalid or missing report data'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        report_type = report_data.get('report_type', 'users')
-        report_summary = report_data.get('summary', {})
-        records = report_data.get('data', [])
-        filters = report_data.get('filters', {})
-        
-        if not isinstance(records, list):
-            log_report_error("INVALID RECORDS DATA", "Records data must be a list", user, report_type)
-            return Response({
-                'success': False,
-                'message': 'Invalid records data format'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Log export attempt
-        print("\n" + "="*80)
-        print(f"[EXPORT STARTED] 📤")
-        print(f"Format: {export_format.upper()}")
-        print(f"Report Type: {report_type}")
-        print(f"User: {user.full_name} ({user.role})")
-        print(f"Records to export: {len(records)}")
-        print("="*80 + "\n")
-        
-        timestamp = now().strftime('%Y%m%d_%H%M%S')
-        filename = f"BTSL_Mentorship_{report_type}_{timestamp}"
-        
-        try:
-            if export_format == 'pdf':
-                return export_pdf_report(filename, report_type, report_summary, records, filters, user)
-            elif export_format == 'excel':
-                return export_excel_report(filename, report_type, report_summary, records, filters, user)
-            elif export_format == 'csv':
-                return export_csv_report(filename, report_type, report_summary, records, filters, user)
-                
-        except Exception as export_error:
-            log_report_error("EXPORT PROCESSING ERROR", str(export_error), user, report_type)
-            return Response({
-                'success': False,
-                'message': f'Error during export processing: {str(export_error)}',
-                'error_details': traceback.format_exc()
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
-    except Exception as e:
-        log_report_error("EXPORT GENERAL ERROR", str(e), request.user if hasattr(request, 'user') else None)
-        return Response({
-            'success': False,
-            'message': f'Unexpected error exporting report: {str(e)}',
-            'error_details': traceback.format_exc()
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-def export_pdf_report(filename, report_type, report_summary, records, filters, user):
-    """Export report as PDF - FIXED VERSION"""
-    try:
-        response = HttpResponse(content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}.pdf"'
-        
-        buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=A4)
-        
-        # Create styles
-        styles = getSampleStyleSheet()
-        title_style = ParagraphStyle(
-            'CustomTitle',
-            parent=styles['Heading1'],
-            fontSize=18,
-            spaceAfter=20,
-            textColor=colors.HexColor('#1E40AF')
-        )
-        
-        subtitle_style = ParagraphStyle(
-            'CustomSubtitle',
-            parent=styles['Heading2'],
-            fontSize=12,
-            spaceAfter=10,
-            textColor=colors.HexColor('#4B5563')
-        )
-        
-        normal_style = styles['Normal']
-        
-        # Build story
-        story = []
-        
-        # Header
-        story.append(Paragraph("BigTech Solutions Ltd (BTSL)", styles['Title']))
-        story.append(Paragraph("Digital Mentorship System", subtitle_style))
-        story.append(Paragraph("Confidential Report", subtitle_style))
-        story.append(Spacer(1, 20))
-        
-        # Report Title
-        title_map = {
-            'users': 'User Registration Report',
-            'mentorships': 'Mentorship Program Report',
-            'departments': 'Department Activity Report',
-            'onboarding': 'Onboarding Progress Report',
-            'sessions': 'Session History Report'
+        severity_weights = {
+            'critical': 1.0,
+            'high': 0.75,
+            'medium': 0.5,
+            'low': 0.25
         }
         
-        story.append(Paragraph(title_map.get(report_type, 'System Report'), title_style))
-        story.append(Spacer(1, 20))
+        total_weight = 0
+        incident_count = incident_qs.count()
         
-        # Report Info
-        info_text = f"""
-        Generated on: {safe_datetime_format(now())}<br/>
-        Generated by: {user.full_name}<br/>
-        Report Type: {report_type.title()}<br/>
-        Total Records: {len(records)}
-        """
-        story.append(Paragraph(info_text, normal_style))
-        story.append(Spacer(1, 20))
+        for incident in incident_qs:
+            weight = severity_weights.get(incident.severity, 0.5)
+            if incident.is_overdue:
+                weight *= 1.5
+            if incident.severity in ['critical', 'high'] and not incident.assigned_to:
+                weight *= 1.3
+            total_weight += weight
         
-        # Key Metrics
-        if report_summary:
-            story.append(Paragraph("Key Metrics", styles['Heading2']))
-            
-            metrics_data = []
-            for key, value in report_summary.items():
-                if isinstance(value, (int, float, str)) and not isinstance(value, bool):
-                    metrics_data.append([
-                        key.replace('_', ' ').title(),
-                        str(value)
-                    ])
-            
-            if metrics_data:
-                metrics_table = Table(metrics_data, colWidths=[200, 100])
-                metrics_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#F3F4F6')),
-                    ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 8),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                    ('TOPPADDING', (0, 0), (-1, -1), 6),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.grey)
-                ]))
-                story.append(metrics_table)
-                story.append(Spacer(1, 20))
+        if incident_count > 0:
+            avg_weight = total_weight / incident_count
+            risk_score = min(100, avg_weight * 100)
+        else:
+            risk_score = 0
         
-        # Data Table (limited to first 100 records for PDF)
-        if records:
-            story.append(Paragraph(f"Detailed Data (First {min(100, len(records))} records)", styles['Heading2']))
+        return round(risk_score, 2)
+    
+    def get_department_breakdown(self, start_date, end_date):
+        """Get real department breakdown from database"""
+        accessible_dept_ids = self.get_accessible_department_ids()
+        departments = Department.objects.filter(id__in=accessible_dept_ids, status='active')
+        
+        breakdown = {}
+        
+        for dept in departments:
+            # Get users in department
+            dept_users = CustomUser.objects.filter(
+                Q(department=dept) | Q(departments=dept),
+                is_active=True
+            ).distinct().count()
             
-            # Create table data with headers based on report type
-            table_data = []
+            # Get incidents for department
+            dept_incidents = Incident.objects.filter(
+                department=dept,
+                created_at__gte=start_date,
+                created_at__lte=end_date
+            ).count()
             
-            if report_type == 'users':
-                headers = ['Name', 'Email', 'Role', 'Status', 'Department']
-                for record in records[:100]:  # Limit to 100 for PDF
-                    table_data.append([
-                        str(record.get('full_name', ''))[:20],
-                        str(record.get('email', ''))[:30],
-                        str(record.get('role', '')).title(),
-                        str(record.get('status', '')).title(),
-                        str(record.get('department', ''))[:20]
+            # Calculate department compliance score
+            dept_audits = ComplianceAudit.objects.filter(
+                departments=dept,
+                status='completed'
+            )
+            
+            if dept_audits.exists():
+                dept_compliance = dept_audits.aggregate(
+                    avg_score=Avg('overall_score')
+                )['avg_score'] or 100.0
+            else:
+                dept_compliance = 100.0
+            
+            breakdown[dept.name] = {
+                'user_count': dept_users,
+                'incident_count': dept_incidents,
+                'compliance_score': round(dept_compliance, 2)
+            }
+        
+        return breakdown
+    
+    def get_access_trends(self, start_date, end_date, department_id=None, days=7):
+        """Get real access trends from user logs"""
+        user_qs = self.get_user_queryset(department_id)
+        user_ids = user_qs.values_list('id', flat=True)
+        
+        # Get authentication logs
+        auth_logs = UserLog.objects.filter(
+            timestamp__gte=start_date,
+            timestamp__lte=end_date,
+            user__in=user_ids,
+            log_type='authentication'
+        )
+        
+        # Generate daily trends
+        trends_data = []
+        current_date = end_date - timedelta(days=days-1)
+        
+        while current_date <= end_date:
+            date_start = timezone.make_aware(datetime.combine(current_date.date(), datetime.min.time()))
+            date_end = timezone.make_aware(datetime.combine(current_date.date(), datetime.max.time()))
+            
+            date_logs = auth_logs.filter(
+                timestamp__gte=date_start,
+                timestamp__lte=date_end
+            )
+            
+            successful_logins = date_logs.filter(
+                activity='login_otp_verify',
+                is_success=True
+            ).count()
+            
+            failed_logins = date_logs.filter(
+                activity__in=['login', 'login_otp_request'],
+                is_success=False
+            ).count()
+            
+            flagged_activities = date_logs.filter(is_success=False).count()
+            
+            trends_data.append({
+                'date': current_date.date(),
+                'successful_logins': successful_logins,
+                'failed_logins': failed_logins,
+                'flagged_activities': flagged_activities
+            })
+            
+            current_date += timedelta(days=1)
+        
+        return trends_data
+    
+    def get_incident_trends(self, start_date, end_date, department_id=None):
+        """Get real incident trends"""
+        incident_qs = self.get_incident_queryset(start_date, end_date, department_id)
+        
+        # Generate daily trends
+        trends_data = []
+        days_count = min(15, (end_date - start_date).days + 1)
+        
+        for i in range(days_count):
+            date_start = start_date + timedelta(days=i)
+            date_end = date_start + timedelta(days=1)
+            
+            date_incidents = incident_qs.filter(
+                created_at__gte=date_start,
+                created_at__lt=date_end
+            )
+            
+            total = date_incidents.count()
+            resolved = date_incidents.filter(status__in=['resolved', 'closed']).count()
+            
+            # Calculate average resolution time
+            resolved_incidents = date_incidents.filter(
+                status__in=['resolved', 'closed'],
+                resolved_at__isnull=False
+            )
+            
+            avg_time = 0
+            if resolved_incidents.exists():
+                total_hours = 0
+                for incident in resolved_incidents:
+                    if incident.resolved_at and incident.created_at:
+                        hours = (incident.resolved_at - incident.created_at).total_seconds() / 3600
+                        total_hours += hours
+                avg_time = total_hours / resolved_incidents.count()
+            
+            trends_data.append({
+                'date': date_start.date(),
+                'total_incidents': total,
+                'resolved_incidents': resolved,
+                'average_resolution_time': round(avg_time, 2)
+            })
+        
+        return trends_data
+    
+    def get_department_performance(self, start_date, end_date):
+        """Get real department performance metrics"""
+        accessible_dept_ids = self.get_accessible_department_ids()
+        departments = Department.objects.filter(id__in=accessible_dept_ids, status='active')
+        
+        performance_data = []
+        
+        for dept in departments:
+            # Department users
+            dept_users = CustomUser.objects.filter(
+                Q(department=dept) | Q(departments=dept),
+                is_active=True
+            ).distinct()
+            
+            # Department incidents
+            dept_incidents = Incident.objects.filter(
+                department=dept,
+                created_at__gte=start_date,
+                created_at__lte=end_date
+            )
+            
+            # Department compliance score
+            dept_audits = ComplianceAudit.objects.filter(
+                departments=dept,
+                status='completed'
+            )
+            
+            dept_compliance = 100.0
+            if dept_audits.exists():
+                dept_compliance = dept_audits.aggregate(
+                    avg_score=Avg('overall_score')
+                )['avg_score'] or 100.0
+            
+            # Training completion rate - FIXED
+            user_ids = dept_users.values_list('id', flat=True)
+            dept_candidates = Candidate.objects.filter(learner__in=user_ids)
+            total_candidates = dept_candidates.count()
+            
+            completion_rate = 0
+            if total_candidates > 0:
+                completed_candidates = dept_candidates.filter(status='completed').count()
+                completion_rate = (completed_candidates / total_candidates) * 100
+            
+            # Risk level based on incidents
+            critical_incidents = dept_incidents.filter(severity='critical').count()
+            high_incidents = dept_incidents.filter(severity='high').count()
+            overdue_incidents = sum(1 for inc in dept_incidents if inc.is_overdue)
+            
+            if critical_incidents > 0 or overdue_incidents > 3:
+                risk_level = 'critical'
+            elif high_incidents > 2 or overdue_incidents > 1:
+                risk_level = 'high'
+            elif high_incidents > 0 or dept_incidents.count() > 5:
+                risk_level = 'medium'
+            else:
+                risk_level = 'low'
+            
+            performance_data.append({
+                'department_id': dept.id,
+                'department_name': dept.name,
+                'total_users': dept_users.count(),
+                'active_incidents': dept_incidents.exclude(status__in=['resolved', 'closed']).count(),
+                'compliance_score': round(dept_compliance, 2),
+                'training_completion_rate': round(completion_rate, 2),
+                'risk_level': risk_level
+            })
+        
+        return performance_data
+    
+    def get_recent_activities(self, start_date, end_date, department_id=None, limit=10):
+        """Get real recent activities from user logs - SIMPLIFIED"""
+        try:
+            user_qs = self.get_user_queryset(department_id)
+            user_ids = user_qs.values_list('id', flat=True)
+            
+            recent_logs = UserLog.objects.filter(
+                timestamp__gte=start_date,
+                timestamp__lte=end_date,
+                user__in=user_ids
+            ).order_by('-timestamp')[:limit]
+            
+            recent_activities = []
+            
+            for log in recent_logs:
+                # Simple severity determination
+                severity = 'low'
+                if not log.is_success:
+                    severity = 'high'
+                elif 'fail' in log.activity or 'error' in log.activity:
+                    severity = 'medium'
+                
+                description = log.description or ''
+                if len(description) > 100:
+                    description = description[:100] + '...'
+                
+                recent_activities.append({
+                    'timestamp': log.timestamp,
+                    'activity': log.get_activity_display() if hasattr(log, 'get_activity_display') else log.activity,
+                    'description': description,
+                    'user': log.user_email or 'System',
+                    'severity': severity,
+                    'category': log.get_log_type_display() if hasattr(log, 'get_log_type_display') else log.log_type
+                })
+            
+            return recent_activities
+        except Exception as e:
+            logger.error(f"Error getting recent activities: {str(e)}")
+            return []
+    
+    def get_system_health(self, start_date, end_date):
+        """Get real system health metrics from database - SIMPLIFIED"""
+        try:
+            # 1. Authentication System Health
+            auth_logs = UserLog.objects.filter(
+                timestamp__gte=start_date,
+                timestamp__lte=end_date,
+                log_type='authentication'
+            )
+            
+            total_auth = auth_logs.count()
+            failed_auth = auth_logs.filter(is_success=False).count()
+            auth_success_rate = ((total_auth - failed_auth) / total_auth * 100) if total_auth > 0 else 100
+            
+            # 2. Database Health
+            db_status = 'Operational'
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    cursor.fetchone()
+                    db_status = 'Operational'
+            except:
+                db_status = 'Unavailable'
+            
+            # 3. Incident Processing Health
+            total_incidents = Incident.objects.filter(
+                created_at__gte=start_date,
+                created_at__lte=end_date
+            ).count()
+            
+            overdue_incidents = Incident.objects.filter(
+                status__in=['pending', 'investigating', 'assigned', 'in_progress'],
+                sla_due_date__lt=timezone.now()
+            ).count()
+            
+            if overdue_incidents > 5:
+                incident_status = 'Critical'
+            elif overdue_incidents > 2:
+                incident_status = 'Warning'
+            else:
+                incident_status = 'Healthy'
+            
+            return [
+                {
+                    'component': 'Authentication System',
+                    'status': 'Operational' if auth_success_rate > 95 else 'Degraded',
+                    'uptime': round(auth_success_rate, 2),
+                    'last_check': timezone.now(),
+                    'issues': failed_auth
+                },
+                {
+                    'component': 'Database',
+                    'status': db_status,
+                    'uptime': 99.95 if db_status == 'Operational' else 95.0,
+                    'last_check': timezone.now(),
+                    'issues': 1 if db_status != 'Operational' else 0
+                },
+                {
+                    'component': 'Incident Management',
+                    'status': incident_status,
+                    'uptime': 100 - (overdue_incidents / max(total_incidents, 1) * 10) if total_incidents > 0 else 100,
+                    'last_check': timezone.now(),
+                    'issues': overdue_incidents
+                }
+            ]
+        except Exception as e:
+            logger.error(f"Error getting system health: {str(e)}")
+            return []
+    
+    def get_training_progress(self, department_id=None):
+        """Get real training progress data - FIXED"""
+        try:
+            user_qs = self.get_user_queryset(department_id)
+            user_ids = user_qs.values_list('id', flat=True)
+            
+            # Get all trainings that have candidates from these users
+            candidate_trainings = Candidate.objects.filter(
+                learner__in=user_ids
+            ).values_list('training_id', flat=True).distinct()
+            
+            trainings = Training.objects.filter(id__in=candidate_trainings)[:5]  # Limit to 5 trainings
+            
+            progress_data = []
+            
+            for training in trainings:
+                candidates = Candidate.objects.filter(training=training)
+                
+                total_candidates = candidates.count()
+                completed_candidates = candidates.filter(status='completed').count()
+                
+                completion_rate = 0
+                if total_candidates > 0:
+                    completion_rate = (completed_candidates / total_candidates) * 100
+                
+                progress_data.append({
+                    'training_id': training.id,
+                    'training_name': training.name,
+                    'total_candidates': total_candidates,
+                    'completed_candidates': completed_candidates,
+                    'completion_rate': round(completion_rate, 2),
+                    'average_time': 24  # Placeholder
+                })
+            
+            return progress_data
+        except Exception as e:
+            logger.error(f"Error getting training progress: {str(e)}")
+            return []
+    
+    def get_risk_distribution(self, start_date, end_date, department_id=None):
+        """Get real risk distribution from incidents"""
+        try:
+            incident_qs = self.get_incident_queryset(start_date, end_date, department_id)
+            
+            severity_counts = incident_qs.values('severity').annotate(
+                count=Count('id')
+            ).order_by('severity')
+            
+            total_incidents = incident_qs.count()
+            
+            risk_distribution = []
+            
+            for item in severity_counts:
+                percentage = (item['count'] / total_incidents * 100) if total_incidents > 0 else 0
+                
+                risk_distribution.append({
+                    'risk_level': item['severity'],
+                    'count': item['count'],
+                    'percentage': round(percentage, 2),
+                    'departments': []
+                })
+            
+            return risk_distribution
+        except Exception as e:
+            logger.error(f"Error getting risk distribution: {str(e)}")
+            return []
+    
+    def get_user_activities(self, start_date, end_date, department_id=None):
+        """Get real user activity data - SIMPLIFIED"""
+        try:
+            if self.user.role not in ['admin', 'hr_manager', 'security_analyst', 'compliance_officer']:
+                return []
+            
+            user_qs = self.get_user_queryset(department_id)
+            
+            user_activities = []
+            
+            for user in user_qs[:10]:  # Limit to 10 users
+                user_logs = UserLog.objects.filter(
+                    user=user,
+                    timestamp__gte=start_date,
+                    timestamp__lte=end_date
+                )
+                
+                last_log = user_logs.order_by('-timestamp').first()
+                last_activity = last_log.timestamp if last_log else user.created_at
+                
+                user_activities.append({
+                    'user_id': user.id,
+                    'user_name': user.full_name,
+                    'user_email': user.email,
+                    'role': user.get_role_display() if hasattr(user, 'get_role_display') else user.role,
+                    'last_activity': last_activity,
+                    'total_activities': user_logs.count(),
+                    'flagged_activities': user_logs.filter(is_success=False).count()
+                })
+            
+            # Sort by last activity
+            return sorted(user_activities, key=lambda x: x['last_activity'], reverse=True)
+        except Exception as e:
+            logger.error(f"Error getting user activities: {str(e)}")
+            return []
+
+
+# ==================== API VIEWS ====================
+class RoleBasedDashboardView(APIView):
+    """
+    Main dashboard endpoint with real data from database
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            user = request.user
+            filters = request.GET.dict()
+            
+            # Parse filters
+            timeframe = filters.get('timeframe', 'month')
+            start_date_str = filters.get('start_date')
+            end_date_str = filters.get('end_date')
+            department_id = filters.get('department')
+            incident_status = filters.get('status')  # Renamed to avoid conflict
+            severity = filters.get('severity')
+            
+            # Convert department_id
+            if department_id and department_id.isdigit():
+                department_id = int(department_id)
+            elif department_id == '':
+                department_id = None
+            
+            # Initialize data service
+            data_service = DashboardDataService(user)
+            
+            # Get date range
+            start_date, end_date = data_service.get_date_range(
+                timeframe=timeframe,
+                start_date=start_date_str,
+                end_date=end_date_str
+            )
+            
+            # Fetch all data
+            user_stats = data_service.get_user_statistics(start_date, end_date, department_id)
+            incident_stats = data_service.get_incident_statistics(start_date, end_date, department_id)
+            audit_stats = data_service.get_audit_statistics(start_date, end_date, department_id)
+            training_stats = data_service.get_training_statistics(department_id)
+            risk_score = data_service.get_risk_score(start_date, end_date, department_id)
+            department_breakdown = data_service.get_department_breakdown(start_date, end_date)
+            
+            # Compile main stats
+            stats = {
+                'total_users': user_stats['total_users'],
+                'active_users': user_stats['active_users'],
+                'pending_users': user_stats['pending_users'],
+                'total_incidents': incident_stats['total_incidents'],
+                'open_incidents': incident_stats['open_incidents'],
+                'critical_incidents': incident_stats['critical_incidents'],
+                'total_audits': audit_stats['total_audits'],
+                'active_audits': audit_stats['active_audits'],
+                'total_trainings': training_stats['total_trainings'],
+                'ongoing_trainings': training_stats['active_candidates'],
+                'compliance_score': audit_stats['compliance_score'],
+                'risk_score': risk_score,
+                'department_breakdown': department_breakdown
+            }
+            
+            # Get all other data
+            dashboard_data = {
+                'stats': stats,
+                'access_trends': data_service.get_access_trends(start_date, end_date, department_id, days=7),
+                'incident_trends': data_service.get_incident_trends(start_date, end_date, department_id),
+                'department_performance': data_service.get_department_performance(start_date, end_date),
+                'recent_activities': data_service.get_recent_activities(start_date, end_date, department_id, limit=10),
+                'system_health': data_service.get_system_health(start_date, end_date),
+                'training_progress': data_service.get_training_progress(department_id),
+                'risk_distribution': data_service.get_risk_distribution(start_date, end_date, department_id),
+                'user_activities': data_service.get_user_activities(start_date, end_date, department_id),
+                'generated_at': timezone.now(),
+                'filters': {
+                    'timeframe': timeframe,
+                    'department': department_id,
+                    'status': incident_status,  # Using renamed variable
+                    'severity': severity,
+                    'start_date': start_date_str,
+                    'end_date': end_date_str
+                }
+            }
+            
+            return Response(dashboard_data, status=http_status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Dashboard error: {str(e)}", exc_info=True)
+            return Response(
+                {'error': 'Failed to load dashboard data', 'details': str(e)},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class DashboardFiltersView(APIView):
+    """API endpoint to get available dashboard filters based on user role"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            user = request.user
+            
+            # Timeframes
+            timeframes = [
+                {'value': 'today', 'label': 'Today'},
+                {'value': 'week', 'label': 'Last 7 Days'},
+                {'value': 'month', 'label': 'Last 30 Days'},
+                {'value': 'quarter', 'label': 'Last Quarter'},
+                {'value': 'year', 'label': 'Last Year'},
+                {'value': 'custom', 'label': 'Custom Range'}
+            ]
+            
+            # Severities
+            severities = [
+                {'value': 'critical', 'label': 'Critical'},
+                {'value': 'high', 'label': 'High'},
+                {'value': 'medium', 'label': 'Medium'},
+                {'value': 'low', 'label': 'Low'}
+            ]
+            
+            # Statuses
+            statuses = [
+                {'value': 'pending', 'label': 'Pending'},
+                {'value': 'investigating', 'label': 'Investigating'},
+                {'value': 'assigned', 'label': 'Assigned'},
+                {'value': 'in_progress', 'label': 'In Progress'},
+                {'value': 'resolved', 'label': 'Resolved'},
+                {'value': 'closed', 'label': 'Closed'}
+            ]
+            
+            # Get departments based on user role
+            departments_list = []
+            try:
+                if user.role in ['admin', 'hr_manager', 'compliance_officer']:
+                    departments = Department.objects.filter(status='active')
+                elif user.role == 'security_analyst':
+                    departments = user.departments.filter(status='active')
+                elif user.role == 'employee':
+                    if user.department:
+                        departments = Department.objects.filter(id=user.department.id, status='active')
+                    else:
+                        departments = Department.objects.none()
+                else:
+                    departments = Department.objects.none()
+                
+                departments_list = [
+                    {'value': dept.id, 'label': dept.name}
+                    for dept in departments
+                ]
+                
+                # Add "All Departments" option for users who can see multiple departments
+                if len(departments_list) > 1:
+                    departments_list.insert(0, {'value': '', 'label': 'All Departments'})
+            except Exception as e:
+                logger.error(f"Error getting departments: {str(e)}")
+            
+            filters = {
+                'timeframes': timeframes,
+                'severities': severities,
+                'statuses': statuses,
+                'departments': departments_list
+            }
+            
+            return Response(filters, status=http_status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error getting filters: {str(e)}")
+            return Response(
+                {'error': 'Failed to load filters'},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class ExportDashboardView(APIView):
+    """API endpoint to export dashboard data in various formats"""
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            export_format = request.data.get('format')
+            if not export_format or export_format not in ['json', 'csv', 'pdf']:
+                return Response({'error': 'Invalid export format'}, status=http_status.HTTP_400_BAD_REQUEST)
+            
+            user = request.user
+            
+            # Get dashboard data
+            dashboard_view = RoleBasedDashboardView()
+            dashboard_view.request = request
+            
+            response = dashboard_view.get(request)
+            
+            if response.status_code != 200:
+                return response
+            
+            dashboard_data = response.data
+            
+            if export_format == 'json':
+                return Response(dashboard_data, status=http_status.HTTP_200_OK)
+            
+            elif export_format == 'csv':
+                return self.export_to_csv(dashboard_data, user)
+            
+            elif export_format == 'pdf':
+                return self.export_to_pdf(dashboard_data, user)
+                
+        except Exception as e:
+            logger.error(f"Export error: {str(e)}")
+            return Response(
+                {'error': f'Export failed: {str(e)}'},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def export_to_csv(self, data, user):
+        """Export dashboard data to CSV - SIMPLIFIED"""
+        try:
+            output = StringIO()
+            writer = csv.writer(output)
+            
+            # Write header
+            writer.writerow(['Security Dashboard Export'])
+            writer.writerow(['Generated For:', user.full_name])
+            writer.writerow(['Generated At:', str(timezone.now())])
+            writer.writerow(['User Role:', user.role])
+            writer.writerow([])
+            
+            # Write statistics
+            writer.writerow(['OVERALL STATISTICS'])
+            writer.writerow(['Metric', 'Value'])
+            
+            stats = data.get('stats', {})
+            writer.writerow(['Total Users', stats.get('total_users', 0)])
+            writer.writerow(['Active Users', stats.get('active_users', 0)])
+            writer.writerow(['Pending Users', stats.get('pending_users', 0)])
+            writer.writerow(['Total Incidents', stats.get('total_incidents', 0)])
+            writer.writerow(['Open Incidents', stats.get('open_incidents', 0)])
+            writer.writerow(['Critical Incidents', stats.get('critical_incidents', 0)])
+            writer.writerow(['Total Audits', stats.get('total_audits', 0)])
+            writer.writerow(['Active Audits', stats.get('active_audits', 0)])
+            writer.writerow(['Total Trainings', stats.get('total_trainings', 0)])
+            writer.writerow(['Active Candidates', stats.get('ongoing_trainings', 0)])
+            writer.writerow(['Compliance Score', f"{stats.get('compliance_score', 0)}%"])
+            writer.writerow(['Risk Score', f"{stats.get('risk_score', 0)}%"])
+            writer.writerow([])
+            
+            # Write department breakdown if available
+            if stats.get('department_breakdown'):
+                writer.writerow(['DEPARTMENT BREAKDOWN'])
+                writer.writerow(['Department', 'Users', 'Incidents', 'Compliance Score'])
+                for dept_name, dept_data in stats['department_breakdown'].items():
+                    writer.writerow([
+                        dept_name,
+                        dept_data.get('user_count', 0),
+                        dept_data.get('incident_count', 0),
+                        f"{dept_data.get('compliance_score', 0)}%"
                     ])
             
-            elif report_type == 'mentorships':
-                headers = ['Mentor', 'Mentee', 'Department', 'Status', 'Progress']
-                for record in records[:100]:
-                    table_data.append([
-                        str(record.get('mentor_name', ''))[:20],
-                        str(record.get('mentee_name', ''))[:20],
-                        str(record.get('department', ''))[:15],
-                        str(record.get('status', '')).title(),
-                        f"{record.get('progress_percentage', 0)}%"
-                    ])
+            # Prepare response
+            csv_content = output.getvalue()
+            response = HttpResponse(csv_content, content_type='text/csv')
+            filename = f"dashboard_export_{user.email}_{timezone.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
             
-            elif report_type == 'departments':
-                headers = ['Department', 'Mentees', 'Mentors', 'Mentorships', 'Programs']
-                for record in records[:100]:
-                    table_data.append([
-                        str(record.get('name', ''))[:25],
-                        str(record.get('mentee_count', 0)),
-                        str(record.get('mentor_count', 0)),
-                        str(record.get('active_mentorships', 0)),
-                        str(record.get('programs', 0))
-                    ])
+            return response
+        except Exception as e:
+            logger.error(f"CSV export error: {str(e)}")
+            return Response(
+                {'error': 'Failed to generate CSV export'},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def export_to_pdf(self, data, user):
+        """Export dashboard data to PDF"""
+        try:
+            # Create buffer for PDF
+            buffer = BytesIO()
             
-            elif report_type == 'onboarding':
-                headers = ['Mentee', 'Module', 'Status', 'Progress', 'Time Spent']
-                for record in records[:100]:
-                    table_data.append([
-                        str(record.get('mentee_name', ''))[:20],
-                        str(record.get('module_title', ''))[:20],
-                        str(record.get('status', '')).title()[:10],
-                        f"{record.get('progress_percentage', 0)}%",
-                        f"{record.get('time_spent_minutes', 0)} min"
-                    ])
+            # Create PDF document
+            doc = SimpleDocTemplate(
+                buffer,
+                pagesize=letter,
+                rightMargin=72,
+                leftMargin=72,
+                topMargin=72,
+                bottomMargin=72
+            )
             
-            elif report_type == 'sessions':
-                headers = ['Mentor', 'Mentee', 'Program', 'Status', 'Duration']
-                for record in records[:100]:
-                    table_data.append([
-                        str(record.get('mentor_name', ''))[:20],
-                        str(record.get('mentee_name', ''))[:20],
-                        str(record.get('program_name', ''))[:15],
-                        str(record.get('status', '')).title(),
-                        f"{record.get('duration_minutes', 0)} min"
-                    ])
+            # Get styles
+            styles = getSampleStyleSheet()
             
-            # Add headers to table data
-            table_data.insert(0, headers)
+            # Custom styles
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Title'],
+                fontSize=18,
+                spaceAfter=12
+            )
             
-            # Create table
-            col_width = 500 / len(headers)
-            table = Table(table_data, colWidths=[col_width] * len(headers))
+            heading_style = ParagraphStyle(
+                'CustomHeading',
+                parent=styles['Heading2'],
+                fontSize=14,
+                spaceBefore=12,
+                spaceAfter=6
+            )
             
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E40AF')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            normal_style = ParagraphStyle(
+                'CustomNormal',
+                parent=styles['Normal'],
+                fontSize=10
+            )
+            
+            # Build content
+            content = []
+            
+            # Title
+            content.append(Paragraph('Security Dashboard Export Report', title_style))
+            content.append(Paragraph(f'Generated For: {user.full_name}', normal_style))
+            content.append(Paragraph(f'User Role: {user.get_role_display() if hasattr(user, "get_role_display") else user.role}', normal_style))
+            content.append(Paragraph(f'Generated At: {timezone.now().strftime("%Y-%m-%d %H:%M:%S")}', normal_style))
+            content.append(Spacer(1, 20))
+            
+            # Statistics Section
+            content.append(Paragraph('Overall Statistics', heading_style))
+            
+            stats = data.get('stats', {})
+            
+            # Create statistics table
+            stats_data = [
+                ['Metric', 'Value'],
+                ['Total Users', str(stats.get('total_users', 0))],
+                ['Active Users', str(stats.get('active_users', 0))],
+                ['Pending Users', str(stats.get('pending_users', 0))],
+                ['Total Incidents', str(stats.get('total_incidents', 0))],
+                ['Open Incidents', str(stats.get('open_incidents', 0))],
+                ['Critical Incidents', str(stats.get('critical_incidents', 0))],
+                ['Total Audits', str(stats.get('total_audits', 0))],
+                ['Active Audits', str(stats.get('active_audits', 0))],
+                ['Total Trainings', str(stats.get('total_trainings', 0))],
+                ['Active Candidates', str(stats.get('ongoing_trainings', 0))],
+                ['Compliance Score', f"{stats.get('compliance_score', 0)}%"],
+                ['Risk Score', f"{stats.get('risk_score', 0)}%"]
+            ]
+            
+            stats_table = Table(stats_data, colWidths=[250, 100])
+            stats_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
                 ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, 0), 9),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
                 ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                ('BACKGROUND', (0, 1), (-1, -1), colors.white),
-                ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
-                ('FONTSIZE', (0, 1), (-1, -1), 7),
-                ('GRID', (0, 0), (-1, -1), 1, colors.grey),
-                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8f9fa')),
+                ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#dee2e6')),
             ]))
             
-            story.append(table)
+            content.append(stats_table)
+            content.append(Spacer(1, 20))
             
-            if len(records) > 100:
-                story.append(Spacer(1, 10))
-                story.append(Paragraph(f"Note: Only first 100 of {len(records)} records shown. Download Excel/CSV for complete data.", normal_style))
-        
-        # Footer
-        story.append(Spacer(1, 40))
-        story.append(Paragraph("Confidential Information - BigTech Solutions Ltd", normal_style))
-        story.append(Paragraph(f"Generated on: {safe_datetime_format(now())}", normal_style))
-        
-        # Build PDF
-        doc.build(story)
-        pdf = buffer.getvalue()
-        buffer.close()
-        
-        response.write(pdf)
-        
-        print(f"[EXPORT SUCCESS] ✅ PDF exported: {filename}.pdf ({len(pdf)} bytes)")
-        
-        return response
-        
-    except Exception as e:
-        log_report_error("PDF EXPORT ERROR", str(e), user, report_type)
-        raise
-
-
-def export_excel_report(filename, report_type, report_summary, records, filters, user):
-    """Export report as Excel - FIXED VERSION"""
-    try:
-        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        response['Content-Disposition'] = f'attachment; filename="{filename}.xlsx"'
-        
-        # Convert records to DataFrame with safe handling
-        df_records = []
-        for record in records:
-            clean_record = {}
-            for key, value in record.items():
-                # Handle different data types safely
-                if isinstance(value, (datetime, date)):
-                    clean_record[key] = safe_datetime_format(value)
-                elif isinstance(value, bool):
-                    clean_record[key] = 'Yes' if value else 'No'
-                elif value is None:
-                    clean_record[key] = ''
-                else:
-                    clean_record[key] = str(value)
-            df_records.append(clean_record)
-        
-        df = pd.DataFrame(df_records)
-        
-        # Write to Excel with multiple sheets
-        with pd.ExcelWriter(response, engine='openpyxl') as writer:
-            # Data sheet
-            if not df.empty:
-                df.to_excel(writer, sheet_name='Data', index=False)
+            # Department Breakdown Section
+            if stats.get('department_breakdown'):
+                content.append(Paragraph('Department Breakdown', heading_style))
+                
+                dept_data = [['Department', 'Users', 'Incidents', 'Compliance Score']]
+                
+                for dept_name, dept_stats in stats['department_breakdown'].items():
+                    dept_data.append([
+                        dept_name,
+                        str(dept_stats.get('user_count', 0)),
+                        str(dept_stats.get('incident_count', 0)),
+                        f"{dept_stats.get('compliance_score', 0)}%"
+                    ])
+                
+                dept_table = Table(dept_data, colWidths=[150, 70, 80, 100])
+                dept_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#34495e')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 9),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#bdc3c7')),
+                ]))
+                
+                content.append(dept_table)
+                content.append(Spacer(1, 20))
             
-            # Summary sheet
-            summary_data = []
-            for key, value in report_summary.items():
-                if isinstance(value, (int, float, str)) and not isinstance(value, bool):
-                    summary_data.append({
-                        'Metric': key.replace('_', ' ').title(),
-                        'Value': str(value)
-                    })
+            # System Health Section (if available)
+            if data.get('system_health'):
+                content.append(Paragraph('System Health Status', heading_style))
+                
+                health_data = [['Component', 'Status', 'Uptime', 'Issues']]
+                
+                for component in data['system_health']:
+                    health_data.append([
+                        component.get('component', ''),
+                        component.get('status', ''),
+                        f"{component.get('uptime', 0)}%",
+                        str(component.get('issues', 0))
+                    ])
+                
+                health_table = Table(health_data, colWidths=[150, 80, 70, 60])
+                health_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 9),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#bdc3c7')),
+                ]))
+                
+                content.append(health_table)
+                content.append(Spacer(1, 20))
             
-            if summary_data:
-                summary_df = pd.DataFrame(summary_data)
-                summary_df.to_excel(writer, sheet_name='Summary', index=False)
-            
-            # Metadata sheet
-            metadata = {
-                'Organization': 'BigTech Solutions Ltd (BTSL)',
-                'System': 'Digital Mentorship System',
-                'Report Type': report_type.title(),
-                'Generated By': user.full_name,
-                'User Role': user.role,
-                'Generated At': safe_datetime_format(now()),
-                'Total Records': len(records),
-                'Export Format': 'Excel'
-            }
-            metadata_df = pd.DataFrame(list(metadata.items()), columns=['Field', 'Value'])
-            metadata_df.to_excel(writer, sheet_name='Metadata', index=False)
-        
-        print(f"[EXPORT SUCCESS] ✅ Excel exported: {filename}.xlsx")
-        
-        return response
-        
-    except Exception as e:
-        log_report_error("EXCEL EXPORT ERROR", str(e), user, report_type)
-        raise
-
-
-def export_csv_report(filename, report_type, report_summary, records, filters, user):
-    """Export report as CSV - FIXED VERSION"""
-    try:
-        response = HttpResponse(content_type='text/csv; charset=utf-8')
-        response['Content-Disposition'] = f'attachment; filename="{filename}.csv"'
-        
-        # Add BOM for Excel compatibility
-        response.write('\ufeff')
-        
-        writer = csv.writer(response)
-        
-        # Write metadata header
-        writer.writerow(['BigTech Solutions Ltd (BTSL) - Digital Mentorship System'])
-        writer.writerow(['Report Type:', report_type.title()])
-        writer.writerow(['Generated By:', user.full_name])
-        writer.writerow(['User Role:', user.role])
-        writer.writerow(['Generated At:', safe_datetime_format(now())])
-        writer.writerow(['Total Records:', len(records)])
-        writer.writerow([])
-        
-        # Write summary
-        writer.writerow(['SUMMARY'])
-        for key, value in report_summary.items():
-            if isinstance(value, (int, float, str)) and not isinstance(value, bool):
-                writer.writerow([key.replace('_', ' ').title(), str(value)])
-        
-        writer.writerow([])
-        writer.writerow(['DETAILED DATA'])
-        
-        # Write data headers and rows
-        if records:
-            # Get all keys from first record
-            headers = list(records[0].keys())
-            writer.writerow(headers)
-            
-            # Write data rows
-            for record in records:
-                row = []
-                for key in headers:
-                    value = record.get(key, '')
-                    # Convert values to string safely
-                    if isinstance(value, (datetime, date)):
-                        row.append(safe_datetime_format(value))
-                    elif isinstance(value, bool):
-                        row.append('Yes' if value else 'No')
-                    elif value is None:
-                        row.append('')
+            # Recent Activities Section (if available, show first 10)
+            if data.get('recent_activities'):
+                content.append(Paragraph('Recent Activities (Last 10)', heading_style))
+                
+                activity_data = [['Time', 'Activity', 'User', 'Status']]
+                
+                for activity in data['recent_activities'][:10]:
+                    # Format timestamp
+                    timestamp = activity.get('timestamp', '')
+                    if isinstance(timestamp, str):
+                        try:
+                            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                            time_str = dt.strftime('%Y-%m-%d %H:%M')
+                        except:
+                            time_str = timestamp[:16]
                     else:
-                        # Remove commas and newlines for CSV
-                        row.append(str(value).replace(',', ';').replace('\n', ' '))
-                writer.writerow(row)
+                        time_str = str(timestamp)[:16]
+                    
+                    activity_data.append([
+                        time_str,
+                        activity.get('activity', '')[:30],
+                        activity.get('user', '')[:20],
+                        activity.get('severity', '').upper()
+                    ])
+                
+                activity_table = Table(activity_data, colWidths=[80, 120, 100, 50])
+                activity_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#8e44ad')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 8),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.white),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#bdc3c7')),
+                ]))
+                
+                content.append(activity_table)
+                content.append(Spacer(1, 20))
+            
+            # Footer
+            content.append(Paragraph('--- End of Report ---', normal_style))
+            content.append(Spacer(1, 10))
+            content.append(Paragraph('Confidential - For internal use only', 
+                                   ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, textColor=colors.gray)))
+            
+            # Build PDF
+            doc.build(content)
+            buffer.seek(0)
+            
+            # Create response
+            response = HttpResponse(buffer, content_type='application/pdf')
+            filename = f"dashboard_export_{user.email}_{timezone.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            
+            return response
+            
+        except ImportError:
+            logger.error("ReportLab not installed for PDF export")
+            return Response(
+                {'error': 'PDF export requires ReportLab library. Install with: pip install reportlab'},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        except Exception as e:
+            logger.error(f"PDF export error: {str(e)}", exc_info=True)
+            
+            # Fallback: try simple PDF generation
+            try:
+                return self.export_to_pdf_simple(data, user)
+            except Exception as e2:
+                logger.error(f"Simple PDF export also failed: {str(e2)}")
+                return Response(
+                    {'error': f'Failed to generate PDF: {str(e)}'},
+                    status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+    
+    def export_to_pdf_simple(self, data, user):
+        """Simple fallback PDF generation using canvas only"""
+        try:
+            buffer = BytesIO()
+            p = canvas.Canvas(buffer, pagesize=letter)
+            
+            # Set up page
+            width, height = letter
+            
+            # Title
+            p.setFont("Helvetica-Bold", 16)
+            p.drawString(100, height - 100, "Security Dashboard Export Report")
+            
+            p.setFont("Helvetica", 10)
+            p.drawString(100, height - 130, f"Generated For: {user.full_name}")
+            p.drawString(100, height - 150, f"User Role: {user.get_role_display() if hasattr(user, 'get_role_display') else user.role}")
+            p.drawString(100, height - 170, f"Generated At: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            y = height - 200
+            
+            # Statistics
+            p.setFont("Helvetica-Bold", 12)
+            p.drawString(100, y, "Overall Statistics")
+            y -= 20
+            
+            p.setFont("Helvetica", 10)
+            stats = data.get('stats', {})
+            
+            stats_list = [
+                f"Total Users: {stats.get('total_users', 0)}",
+                f"Active Users: {stats.get('active_users', 0)}",
+                f"Pending Users: {stats.get('pending_users', 0)}",
+                f"Total Incidents: {stats.get('total_incidents', 0)}",
+                f"Open Incidents: {stats.get('open_incidents', 0)}",
+                f"Critical Incidents: {stats.get('critical_incidents', 0)}",
+                f"Total Audits: {stats.get('total_audits', 0)}",
+                f"Active Audits: {stats.get('active_audits', 0)}",
+                f"Compliance Score: {stats.get('compliance_score', 0)}%",
+                f"Risk Score: {stats.get('risk_score', 0)}%"
+            ]
+            
+            for stat in stats_list:
+                p.drawString(120, y, stat)
+                y -= 15
+                if y < 100:  # New page if needed
+                    p.showPage()
+                    y = height - 100
+            
+            # Department breakdown if available
+            if stats.get('department_breakdown'):
+                y -= 20
+                p.setFont("Helvetica-Bold", 12)
+                p.drawString(100, y, "Department Breakdown")
+                y -= 20
+                
+                p.setFont("Helvetica", 10)
+                for dept_name, dept_stats in stats['department_breakdown'].items():
+                    dept_text = f"{dept_name}: Users={dept_stats.get('user_count', 0)}, "
+                    dept_text += f"Incidents={dept_stats.get('incident_count', 0)}, "
+                    dept_text += f"Compliance={dept_stats.get('compliance_score', 0)}%"
+                    
+                    p.drawString(120, y, dept_text[:80])  # Limit line length
+                    y -= 15
+                    if y < 100:
+                        p.showPage()
+                        y = height - 100
+            
+            # Footer
+            p.setFont("Helvetica-Oblique", 8)
+            p.drawString(100, 50, "Confidential - For internal use only")
+            p.drawString(100, 40, f"Page 1 - Generated by {user.email}")
+            
+            p.save()
+            buffer.seek(0)
+            
+            response = HttpResponse(buffer, content_type='application/pdf')
+            filename = f"dashboard_simple_{user.email}_{timezone.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Simple PDF export error: {str(e)}")
+            raise
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# reportApp/views.py - ADD THESE VIEWS
+
+# Add to existing imports
+from rest_framework.viewsets import ViewSet
+from rest_framework.decorators import action
+from datetime import datetime, timedelta
+from django.db.models import Count, Avg, Q, Sum, F, Min, Max
+from django.db import models
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+
+# ==================== REPORT GENERATION SERVICE ====================
+class ReportGenerationService:
+    """Service for generating reports based on user role and filters"""
+    
+    def __init__(self, user):
+        self.user = user
+        self.today = timezone.now()
+    
+    def get_date_range(self, start_date, end_date):
+        """Get proper date range with timezone"""
+        if not end_date:
+            end_date = self.today.date()
+        if not start_date:
+            start_date = end_date - timedelta(days=30)
         
-        print(f"[EXPORT SUCCESS] ✅ CSV exported: {filename}.csv")
+        start_datetime = timezone.make_aware(datetime.combine(start_date, datetime.min.time()))
+        end_datetime = timezone.make_aware(datetime.combine(end_date, datetime.max.time()))
         
-        return response
+        return start_datetime, end_datetime
+    
+    def get_user_queryset(self, filters):
+        """Get filtered user queryset based on user role"""
+        qs = CustomUser.objects.filter(is_active=True)
         
-    except Exception as e:
-        log_report_error("CSV EXPORT ERROR", str(e), user, report_type)
-        raise
+        # Apply date filter if provided
+        if filters.get('start_date') and filters.get('end_date'):
+            start_date, end_date = self.get_date_range(
+                filters['start_date'], filters['end_date']
+            )
+            qs = qs.filter(created_at__range=[start_date, end_date])
+        
+        # Apply role filter
+        if filters.get('role'):
+            qs = qs.filter(role=filters['role'])
+        
+        # Apply status filter
+        if filters.get('status'):
+            qs = qs.filter(status=filters['status'])
+        
+        # Apply department filter based on user role
+        if filters.get('department'):
+            department_id = filters['department']
+            qs = self.filter_by_department(qs, department_id)
+        else:
+            # Apply default department filtering based on user role
+            qs = self.apply_role_based_filtering(qs)
+        
+        return qs.order_by('-created_at')
+    
+    def filter_by_department(self, queryset, department_id):
+        """Filter queryset by department based on user role"""
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            # Admins can see all departments
+            return queryset.filter(
+                Q(department__id=department_id) | Q(departments__id=department_id)
+            ).distinct()
+        
+        elif self.user.role == 'security_analyst':
+            # Security analysts can only see their assigned departments
+            if department_id and department_id in list(self.user.departments.values_list('id', flat=True)):
+                return queryset.filter(
+                    Q(department__id=department_id) | Q(departments__id=department_id)
+                ).distinct()
+            else:
+                # Return empty queryset if trying to access unauthorized department
+                return queryset.none()
+        
+        elif self.user.role == 'employee':
+            # Employees can only see their own department
+            if self.user.department and self.user.department.id == department_id:
+                return queryset.filter(department__id=department_id)
+            else:
+                return queryset.none()
+        
+        return queryset.none()
+    
+    def apply_role_based_filtering(self, queryset):
+        """Apply default role-based filtering"""
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            # Can see all users
+            return queryset
+        
+        elif self.user.role == 'security_analyst':
+            # Can only see users in their assigned departments
+            dept_ids = list(self.user.departments.values_list('id', flat=True))
+            if dept_ids:
+                return queryset.filter(
+                    Q(department__id__in=dept_ids) | Q(departments__id__in=dept_ids)
+                ).distinct()
+            else:
+                return queryset.none()
+        
+        elif self.user.role == 'employee':
+            # Can only see users in same department
+            if self.user.department:
+                return queryset.filter(department=self.user.department)
+            else:
+                return queryset.none()
+        
+        return queryset.none()
+    
+    def get_incident_queryset(self, filters):
+        """Get filtered incident queryset based on user role"""
+        qs = Incident.objects.all()
+        
+        # Apply date filter
+        if filters.get('start_date') and filters.get('end_date'):
+            start_date, end_date = self.get_date_range(
+                filters['start_date'], filters['end_date']
+            )
+            qs = qs.filter(created_at__range=[start_date, end_date])
+        
+        # Apply severity filter
+        if filters.get('severity'):
+            qs = qs.filter(severity=filters['severity'])
+        
+        # Apply status filter
+        status_filter = filters.get('incident_status') or filters.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        
+        # Apply department filter
+        if filters.get('department'):
+            department_id = filters['department']
+            qs = self.filter_incidents_by_department(qs, department_id)
+        else:
+            qs = self.apply_role_based_incident_filtering(qs)
+        
+        return qs.order_by('-created_at')
+    
+    def filter_incidents_by_department(self, queryset, department_id):
+        """Filter incidents by department based on user role"""
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            return queryset.filter(department__id=department_id)
+        
+        elif self.user.role == 'security_analyst':
+            if department_id and department_id in list(self.user.departments.values_list('id', flat=True)):
+                return queryset.filter(department__id=department_id)
+            else:
+                return queryset.none()
+        
+        elif self.user.role == 'employee':
+            if self.user.department and self.user.department.id == department_id:
+                return queryset.filter(department__id=department_id)
+            else:
+                return queryset.none()
+        
+        return queryset.none()
+    
+    def apply_role_based_incident_filtering(self, queryset):
+        """Apply default role-based filtering for incidents"""
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            return queryset
+        
+        elif self.user.role == 'security_analyst':
+            dept_ids = list(self.user.departments.values_list('id', flat=True))
+            if dept_ids:
+                return queryset.filter(department__id__in=dept_ids)
+            else:
+                return queryset.none()
+        
+        elif self.user.role == 'employee':
+            if self.user.department:
+                return queryset.filter(department=self.user.department)
+            else:
+                return queryset.none()
+        
+        return queryset.none()
+    
+    def get_audit_queryset(self, filters):
+        """Get filtered audit queryset based on user role"""
+        qs = ComplianceAudit.objects.all()
+        
+        # Apply date filter
+        if filters.get('start_date') and filters.get('end_date'):
+            start_date, end_date = self.get_date_range(
+                filters['start_date'], filters['end_date']
+            )
+            qs = qs.filter(created_at__range=[start_date, end_date])
+        
+        # Apply status filter
+        status_filter = filters.get('audit_status') or filters.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        
+        # Apply department filter
+        if filters.get('department'):
+            department_id = filters['department']
+            qs = self.filter_audits_by_department(qs, department_id)
+        else:
+            qs = self.apply_role_based_audit_filtering(qs)
+        
+        # Apply compliance standard filter
+        if filters.get('compliance_standard'):
+            qs = qs.filter(standard__standard_type=filters['compliance_standard'])
+        
+        return qs.order_by('-created_at')
+    
+    def filter_audits_by_department(self, queryset, department_id):
+        """Filter audits by department based on user role"""
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            return queryset.filter(departments__id=department_id)
+        
+        elif self.user.role == 'security_analyst':
+            if department_id and department_id in list(self.user.departments.values_list('id', flat=True)):
+                return queryset.filter(departments__id=department_id)
+            else:
+                return queryset.none()
+        
+        elif self.user.role == 'employee':
+            if self.user.department and self.user.department.id == department_id:
+                return queryset.filter(departments__id=department_id)
+            else:
+                return queryset.none()
+        
+        return queryset.none()
+    
+    def apply_role_based_audit_filtering(self, queryset):
+        """Apply default role-based filtering for audits"""
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            return queryset
+        
+        elif self.user.role == 'security_analyst':
+            dept_ids = list(self.user.departments.values_list('id', flat=True))
+            if dept_ids:
+                return queryset.filter(departments__id__in=dept_ids)
+            else:
+                return queryset.none()
+        
+        elif self.user.role == 'employee':
+            if self.user.department:
+                return queryset.filter(departments__id=self.user.department.id)
+            else:
+                return queryset.none()
+        
+        return queryset.none()
+    
+    def get_training_queryset(self, filters):
+        """Get filtered training queryset based on user role"""
+        # Get accessible users first
+        user_qs = self.get_user_queryset(filters)
+        accessible_user_ids = list(user_qs.values_list('id', flat=True))
+        
+        # Get trainings for these users
+        candidate_trainings = Candidate.objects.filter(
+            learner__in=accessible_user_ids
+        ).values_list('training_id', flat=True).distinct()
+        
+        qs = Training.objects.filter(id__in=candidate_trainings)
+        
+        # Apply status filter (through candidates)
+        if filters.get('training_status') or filters.get('status'):
+            status_filter = filters.get('training_status') or filters.get('status')
+            # Filter trainings that have candidates with this status
+            candidate_training_ids = Candidate.objects.filter(
+                status=status_filter,
+                learner__in=accessible_user_ids
+            ).values_list('training_id', flat=True).distinct()
+            qs = qs.filter(id__in=candidate_training_ids)
+        
+        return qs.order_by('-created_at')
+    
+    def get_department_queryset(self, filters):
+        """Get filtered department queryset based on user role"""
+        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+            qs = Department.objects.all()
+        elif self.user.role == 'security_analyst':
+            qs = self.user.departments.all()
+        elif self.user.role == 'employee':
+            if self.user.department:
+                qs = Department.objects.filter(id=self.user.department.id)
+            else:
+                qs = Department.objects.none()
+        else:
+            qs = Department.objects.none()
+        
+        # Apply status filter
+        if filters.get('status'):
+            qs = qs.filter(status=filters['status'])
+        
+        return qs.order_by('name')
+    
+    def get_activity_logs_queryset(self, filters):
+        """Get filtered activity logs queryset based on user role"""
+        # Get accessible users first
+        user_qs = self.get_user_queryset(filters)
+        accessible_user_ids = list(user_qs.values_list('id', flat=True))
+        
+        qs = UserLog.objects.filter(user__in=accessible_user_ids)
+        
+        # Apply date filter
+        if filters.get('start_date') and filters.get('end_date'):
+            start_date, end_date = self.get_date_range(
+                filters['start_date'], filters['end_date']
+            )
+            qs = qs.filter(timestamp__range=[start_date, end_date])
+        
+        # Apply log type filter
+        if filters.get('log_type'):
+            qs = qs.filter(log_type=filters['log_type'])
+        
+        # Apply activity type filter
+        if filters.get('activity'):
+            qs = qs.filter(activity=filters['activity'])
+        
+        return qs.order_by('-timestamp')
+    
+    def get_user_training_progress_queryset(self, filters):
+        """Get user training progress queryset based on user role"""
+        # Get accessible users first
+        user_qs = self.get_user_queryset(filters)
+        accessible_user_ids = list(user_qs.values_list('id', flat=True))
+        
+        # Get candidates for these users
+        candidates = Candidate.objects.filter(learner__in=accessible_user_ids)
+        
+        # Apply status filter
+        if filters.get('training_status') or filters.get('status'):
+            status_filter = filters.get('training_status') or filters.get('status')
+            candidates = candidates.filter(status=status_filter)
+        
+        # Get learning progress for these candidates
+        learning_progress = LearningProgress.objects.filter(
+            candidate__in=candidates
+        ).select_related('candidate', 'training')
+        
+        return learning_progress.order_by('-last_activity')
+    
+    def generate_users_report(self, filters):
+        """Generate users report"""
+        queryset = self.get_user_queryset(filters)
+        
+        # Apply pagination
+        page = filters.get('page', 1)
+        page_size = filters.get('page_size', 50)
+        offset = (page - 1) * page_size
+        total_records = queryset.count()
+        
+        paginated_qs = queryset[offset:offset + page_size]
+        
+        # Prepare data
+        report_data = []
+        for user in paginated_qs:
+            report_data.append({
+                'id': user.id,
+                'full_name': user.full_name,
+                'email': user.email,
+                'work_mail_address': user.work_mail_address,
+                'phone_number': user.phone_number,
+                'role': user.get_role_display() if hasattr(user, 'get_role_display') else user.role,
+                'status': user.get_status_display() if hasattr(user, 'get_status_display') else user.status,
+                'availability_status': user.get_availability_status_display() if hasattr(user, 'get_availability_status_display') else user.availability_status,
+                'department': user.department.name if user.department else 'N/A',
+                'departments': [dept.name for dept in user.departments.all()] if user.departments.exists() else [],
+                'created_at': user.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'last_login': user.last_login.strftime('%Y-%m-%d %H:%M:%S') if user.last_login else 'Never',
+                'is_active': 'Yes' if user.is_active else 'No',
+                'is_staff': 'Yes' if user.is_staff else 'No'
+            })
+        
+        # Generate summary statistics
+        summary_stats = {
+            'total_users': total_records,
+            'by_role': dict(queryset.values('role').annotate(count=Count('id')).values_list('role', 'count')),
+            'by_status': dict(queryset.values('status').annotate(count=Count('id')).values_list('status', 'count')),
+            'by_availability': dict(queryset.values('availability_status').annotate(count=Count('id')).values_list('availability_status', 'count')),
+            'active_users': queryset.filter(availability_status='active').count(),
+            'inactive_users': queryset.filter(availability_status='inactive').count(),
+            'pending_users': queryset.filter(status='pending').count(),
+            'average_users_per_day': self.calculate_average_per_day(queryset, 'created_at')
+        }
+        
+        # Key metrics
+        key_metrics = [
+            f"Total Users: {summary_stats['total_users']}",
+            f"Active Users: {summary_stats['active_users']}",
+            f"Pending Approval: {summary_stats['pending_users']}",
+            f"Average New Users Per Day: {summary_stats['average_users_per_day']:.2f}"
+        ]
+        
+        return report_data, summary_stats, key_metrics, total_records
+    
+    def generate_incidents_report(self, filters):
+        """Generate incidents report"""
+        queryset = self.get_incident_queryset(filters)
+        
+        # Apply pagination
+        page = filters.get('page', 1)
+        page_size = filters.get('page_size', 50)
+        offset = (page - 1) * page_size
+        total_records = queryset.count()
+        
+        paginated_qs = queryset[offset:offset + page_size]
+        
+        # Prepare data
+        report_data = []
+        for incident in paginated_qs:
+            report_data.append({
+                'incident_number': incident.incident_number,
+                'title': incident.title,
+                'description': incident.description[:200] + '...' if len(incident.description) > 200 else incident.description,
+                'status': incident.get_status_display() if hasattr(incident, 'get_status_display') else incident.status,
+                'severity': incident.get_severity_display() if hasattr(incident, 'get_severity_display') else incident.severity,
+                'priority': incident.get_priority_display() if hasattr(incident, 'get_priority_display') else incident.priority,
+                'assigned_to': incident.assigned_to.full_name if incident.assigned_to else 'Unassigned',
+                'department': incident.department.name if incident.department else 'N/A',
+                'created_at': incident.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'updated_at': incident.updated_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'resolved_at': incident.resolved_at.strftime('%Y-%m-%d %H:%M:%S') if incident.resolved_at else 'Not resolved',
+                'sla_due_date': incident.sla_due_date.strftime('%Y-%m-%d %H:%M:%S') if incident.sla_due_date else 'Not set',
+                'sla_violated': 'Yes' if incident.sla_violated else 'No',
+                'risk_score': incident.risk_score,
+                'danger_zone': 'Yes' if incident.danger_zone else 'No',
+                'is_overdue': 'Yes' if incident.is_overdue else 'No'
+            })
+        
+        # Generate summary statistics
+        resolved_incidents = queryset.filter(status__in=['resolved', 'closed'])
+        avg_resolution_time = None
+        if resolved_incidents.exists():
+            total_hours = 0
+            for incident in resolved_incidents:
+                if incident.resolved_at and incident.created_at:
+                    hours = (incident.resolved_at - incident.created_at).total_seconds() / 3600
+                    total_hours += hours
+            avg_resolution_time = total_hours / resolved_incidents.count()
+        
+        summary_stats = {
+            'total_incidents': total_records,
+            'open_incidents': queryset.exclude(status__in=['resolved', 'closed']).count(),
+            'resolved_incidents': resolved_incidents.count(),
+            'by_severity': dict(queryset.values('severity').annotate(count=Count('id')).values_list('severity', 'count')),
+            'by_status': dict(queryset.values('status').annotate(count=Count('id')).values_list('status', 'count')),
+            'by_priority': dict(queryset.values('priority').annotate(count=Count('id')).values_list('priority', 'count')),
+            'sla_violations': queryset.filter(sla_violated=True).count(),
+            'overdue_incidents': sum(1 for inc in queryset if inc.is_overdue),
+            'average_resolution_time_hours': round(avg_resolution_time, 2) if avg_resolution_time else 0,
+            'average_incidents_per_day': self.calculate_average_per_day(queryset, 'created_at')
+        }
+        
+        # Key metrics
+        key_metrics = [
+            f"Total Incidents: {summary_stats['total_incidents']}",
+            f"Open Incidents: {summary_stats['open_incidents']}",
+            f"Resolved Incidents: {summary_stats['resolved_incidents']}",
+            f"SLA Violations: {summary_stats['sla_violations']}",
+            f"Average Resolution Time: {summary_stats['average_resolution_time_hours']} hours"
+        ]
+        
+        return report_data, summary_stats, key_metrics, total_records
+    
+    def generate_audits_report(self, filters):
+        """Generate audits report"""
+        queryset = self.get_audit_queryset(filters)
+        
+        # Apply pagination
+        page = filters.get('page', 1)
+        page_size = filters.get('page_size', 50)
+        offset = (page - 1) * page_size
+        total_records = queryset.count()
+        
+        paginated_qs = queryset[offset:offset + page_size]
+        
+        # Prepare data
+        report_data = []
+        for audit in paginated_qs:
+            report_data.append({
+                'audit_id': audit.audit_id,
+                'title': audit.title,
+                'description': audit.description[:200] + '...' if len(audit.description) > 200 else audit.description,
+                'standard': audit.standard.name if audit.standard else 'N/A',
+                'audit_type': audit.get_audit_type_display() if hasattr(audit, 'get_audit_type_display') else audit.audit_type,
+                'status': audit.get_status_display() if hasattr(audit, 'get_status_display') else audit.status,
+                'priority': audit.get_priority_display() if hasattr(audit, 'get_priority_display') else audit.priority,
+                'lead_auditor': audit.lead_auditor.full_name if audit.lead_auditor else 'Not assigned',
+                'departments': [dept.name for dept in audit.departments.all()],
+                'overall_score': f"{audit.overall_score}%" if audit.overall_score else 'Not assessed',
+                'compliance_rate': f"{audit.compliance_rate}%" if audit.compliance_rate else 'Not calculated',
+                'planned_start_date': audit.planned_start_date.strftime('%Y-%m-%d') if audit.planned_start_date else 'Not set',
+                'planned_end_date': audit.planned_end_date.strftime('%Y-%m-%d') if audit.planned_end_date else 'Not set',
+                'actual_start_date': audit.actual_start_date.strftime('%Y-%m-%d') if audit.actual_start_date else 'Not started',
+                'actual_end_date': audit.actual_end_date.strftime('%Y-%m-%d') if audit.actual_end_date else 'Not completed',
+                'total_findings': audit.total_findings,
+                'open_findings': audit.open_findings,
+                'critical_findings': audit.critical_findings,
+                'created_at': audit.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            })
+        
+        # Generate summary statistics
+        completed_audits = queryset.filter(status='completed', overall_score__isnull=False)
+        avg_compliance_score = 0
+        if completed_audits.exists():
+            avg_compliance_score = completed_audits.aggregate(avg=Avg('overall_score'))['avg'] or 0
+        
+        summary_stats = {
+            'total_audits': total_records,
+            'completed_audits': completed_audits.count(),
+            'in_progress_audits': queryset.filter(status='in_progress').count(),
+            'by_status': dict(queryset.values('status').annotate(count=Count('id')).values_list('status', 'count')),
+            'by_type': dict(queryset.values('audit_type').annotate(count=Count('id')).values_list('audit_type', 'count')),
+            'by_standard': dict(queryset.values('standard__name').annotate(count=Count('id')).values_list('standard__name', 'count')),
+            'average_compliance_score': round(avg_compliance_score, 2),
+            'total_findings': queryset.aggregate(total=Sum('total_findings'))['total'] or 0,
+            'open_findings': queryset.aggregate(total=Sum('open_findings'))['total'] or 0,
+            'critical_findings': queryset.aggregate(total=Sum('critical_findings'))['total'] or 0,
+            'average_audits_per_month': self.calculate_average_per_month(queryset, 'created_at')
+        }
+        
+        # Key metrics
+        key_metrics = [
+            f"Total Audits: {summary_stats['total_audits']}",
+            f"Completed Audits: {summary_stats['completed_audits']}",
+            f"In Progress Audits: {summary_stats['in_progress_audits']}",
+            f"Average Compliance Score: {summary_stats['average_compliance_score']}%",
+            f"Total Findings: {summary_stats['total_findings']} (Open: {summary_stats['open_findings']})"
+        ]
+        
+        return report_data, summary_stats, key_metrics, total_records
+    
+    def generate_departments_report(self, filters):
+        """Generate departments report"""
+        queryset = self.get_department_queryset(filters)
+        
+        # Apply pagination
+        page = filters.get('page', 1)
+        page_size = filters.get('page_size', 50)
+        offset = (page - 1) * page_size
+        total_records = queryset.count()
+        
+        paginated_qs = queryset[offset:offset + page_size]
+        
+        # Prepare data with additional metrics
+        report_data = []
+        for dept in paginated_qs:
+            # Get department metrics
+            dept_users = CustomUser.objects.filter(
+                Q(department=dept) | Q(departments=dept),
+                is_active=True
+            ).distinct()
+            
+            dept_incidents = Incident.objects.filter(department=dept)
+            dept_audits = ComplianceAudit.objects.filter(departments=dept)
+            
+            # Calculate compliance score
+            compliance_score = 0
+            if dept_audits.filter(status='completed').exists():
+                completed_audits = dept_audits.filter(status='completed', overall_score__isnull=False)
+                if completed_audits.exists():
+                    compliance_score = completed_audits.aggregate(avg=Avg('overall_score'))['avg'] or 0
+            
+            report_data.append({
+                'id': dept.id,
+                'name': dept.name,
+                'description': dept.description[:200] + '...' if dept.description and len(dept.description) > 200 else dept.description or '',
+                'status': dept.get_status_display() if hasattr(dept, 'get_status_display') else dept.status,
+                'total_users': dept_users.count(),
+                'total_incidents': dept_incidents.count(),
+                'open_incidents': dept_incidents.exclude(status__in=['resolved', 'closed']).count(),
+                'total_audits': dept_audits.count(),
+                'compliance_score': f"{round(compliance_score, 2)}%",
+                'created_at': dept.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'updated_at': dept.updated_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'created_by': dept.created_by.full_name if dept.created_by else 'System'
+            })
+        
+        # Generate summary statistics
+        summary_stats = {
+            'total_departments': total_records,
+            'active_departments': queryset.filter(status='active').count(),
+            'inactive_departments': queryset.filter(status='inactive').count(),
+            'by_status': dict(queryset.values('status').annotate(count=Count('id')).values_list('status', 'count')),
+            'average_users_per_department': self.calculate_average_users_per_department(queryset),
+            'departments_with_incidents': self.count_departments_with_incidents(queryset),
+            'departments_with_audits': self.count_departments_with_audits(queryset)
+        }
+        
+        # Key metrics
+        key_metrics = [
+            f"Total Departments: {summary_stats['total_departments']}",
+            f"Active Departments: {summary_stats['active_departments']}",
+            f"Inactive Departments: {summary_stats['inactive_departments']}",
+            f"Average Users Per Department: {summary_stats['average_users_per_department']:.2f}",
+            f"Departments with Incidents: {summary_stats['departments_with_incidents']}"
+        ]
+        
+        return report_data, summary_stats, key_metrics, total_records
+    
+    def generate_trainings_report(self, filters):
+        """Generate trainings report"""
+        queryset = self.get_training_queryset(filters)
+        
+        # Apply pagination
+        page = filters.get('page', 1)
+        page_size = filters.get('page_size', 50)
+        offset = (page - 1) * page_size
+        total_records = queryset.count()
+        
+        paginated_qs = queryset[offset:offset + page_size]
+        
+        # Prepare data with metrics
+        report_data = []
+        for training in paginated_qs:
+            # Get training metrics
+            candidates = Candidate.objects.filter(training=training)
+            total_candidates = candidates.count()
+            completed_candidates = candidates.filter(status='completed').count()
+            pending_candidates = candidates.filter(status='pending').count()
+            
+            completion_rate = 0
+            if total_candidates > 0:
+                completion_rate = (completed_candidates / total_candidates) * 100
+            
+            total_modules = training.modules.count()
+            total_materials = training.get_total_materials_count()
+            
+            report_data.append({
+                'id': training.id,
+                'name': training.name,
+                'description': training.description[:200] + '...' if training.description and len(training.description) > 200 else training.description or '',
+                'total_candidates': total_candidates,
+                'completed_candidates': completed_candidates,
+                'pending_candidates': pending_candidates,
+                'completion_rate': f"{round(completion_rate, 2)}%",
+                'total_modules': total_modules,
+                'total_materials': total_materials,
+                'created_at': training.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'created_by': training.created_by.full_name if training.created_by else 'Unknown'
+            })
+        
+        # Generate summary statistics
+        summary_stats = {
+            'total_trainings': total_records,
+            'average_completion_rate': self.calculate_average_training_completion_rate(queryset),
+            'total_candidates': self.calculate_total_candidates(queryset),
+            'completed_candidates': self.calculate_completed_candidates(queryset),
+            'by_candidate_status': self.get_candidate_status_distribution(queryset),
+            'average_modules_per_training': self.calculate_average_modules_per_training(queryset),
+            'average_materials_per_training': self.calculate_average_materials_per_training(queryset)
+        }
+        
+        # Key metrics
+        key_metrics = [
+            f"Total Trainings: {summary_stats['total_trainings']}",
+            f"Total Candidates: {summary_stats['total_candidates']}",
+            f"Completed Candidates: {summary_stats['completed_candidates']}",
+            f"Average Completion Rate: {summary_stats['average_completion_rate']:.2f}%",
+            f"Average Modules Per Training: {summary_stats['average_modules_per_training']:.2f}"
+        ]
+        
+        return report_data, summary_stats, key_metrics, total_records
+    
+    # Helper methods for statistics
+    def calculate_average_per_day(self, queryset, date_field):
+        """Calculate average records per day"""
+        if not queryset.exists():
+            return 0
+        
+        dates = queryset.values_list(date_field, flat=True)
+        if not dates:
+            return 0
+        
+        first_date = min(dates)
+        last_date = max(dates)
+        
+        if first_date == last_date:
+            return queryset.count()
+        
+        days_diff = (last_date - first_date).days + 1
+        return queryset.count() / days_diff
+    
+    def calculate_average_per_month(self, queryset, date_field):
+        """Calculate average records per month"""
+        if not queryset.exists():
+            return 0
+        
+        first_date = queryset.aggregate(min_date=Min(date_field))['min_date']
+        last_date = queryset.aggregate(max_date=Max(date_field))['max_date']
+        
+        if not first_date or not last_date:
+            return 0
+        
+        months_diff = ((last_date.year - first_date.year) * 12) + (last_date.month - first_date.month) + 1
+        return queryset.count() / months_diff
+    
+    def calculate_average_users_per_department(self, departments_queryset):
+        """Calculate average users per department"""
+        if not departments_queryset.exists():
+            return 0
+        
+        total_users = 0
+        for dept in departments_queryset:
+            dept_users = CustomUser.objects.filter(
+                Q(department=dept) | Q(departments=dept),
+                is_active=True
+            ).distinct().count()
+            total_users += dept_users
+        
+        return total_users / departments_queryset.count()
+    
+    def count_departments_with_incidents(self, departments_queryset):
+        """Count departments that have incidents"""
+        count = 0
+        for dept in departments_queryset:
+            if Incident.objects.filter(department=dept).exists():
+                count += 1
+        return count
+    
+    def count_departments_with_audits(self, departments_queryset):
+        """Count departments that have audits"""
+        count = 0
+        for dept in departments_queryset:
+            if ComplianceAudit.objects.filter(departments=dept).exists():
+                count += 1
+        return count
+    
+    def calculate_average_training_completion_rate(self, trainings_queryset):
+        """Calculate average completion rate across trainings"""
+        if not trainings_queryset.exists():
+            return 0
+        
+        total_rate = 0
+        count = 0
+        
+        for training in trainings_queryset:
+            candidates = Candidate.objects.filter(training=training)
+            total_candidates = candidates.count()
+            completed_candidates = candidates.filter(status='completed').count()
+            
+            if total_candidates > 0:
+                completion_rate = (completed_candidates / total_candidates) * 100
+                total_rate += completion_rate
+                count += 1
+        
+        return total_rate / count if count > 0 else 0
+    
+    def calculate_total_candidates(self, trainings_queryset):
+        """Calculate total candidates across all trainings"""
+        total = 0
+        for training in trainings_queryset:
+            total += Candidate.objects.filter(training=training).count()
+        return total
+    
+    def calculate_completed_candidates(self, trainings_queryset):
+        """Calculate completed candidates across all trainings"""
+        total = 0
+        for training in trainings_queryset:
+            total += Candidate.objects.filter(training=training, status='completed').count()
+        return total
+    
+    def get_candidate_status_distribution(self, trainings_queryset):
+        """Get candidate status distribution"""
+        distribution = {'completed': 0, 'pending': 0, 'failed': 0}
+        
+        for training in trainings_queryset:
+            for status, count in Candidate.objects.filter(training=training).values('status').annotate(count=Count('id')).values_list('status', 'count'):
+                if status in distribution:
+                    distribution[status] += count
+        
+        return distribution
+    
+    def calculate_average_modules_per_training(self, trainings_queryset):
+        """Calculate average modules per training"""
+        if not trainings_queryset.exists():
+            return 0
+        
+        total_modules = sum(training.modules.count() for training in trainings_queryset)
+        return total_modules / trainings_queryset.count()
+    
+    def calculate_average_materials_per_training(self, trainings_queryset):
+        """Calculate average materials per training"""
+        if not trainings_queryset.exists():
+            return 0
+        
+        total_materials = sum(training.get_total_materials_count() for training in trainings_queryset)
+        return total_materials / trainings_queryset.count()
+
+
+# ==================== REPORT GENERATION VIEW ====================
+class ReportGenerationView(APIView):
+    """
+    API endpoint for generating detailed reports based on user role and filters
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            # Validate input
+            serializer = ReportFilterSerializer(data=request.data)
+            if not serializer.is_valid():
+                return Response(
+                    {'error': 'Invalid filter parameters', 'details': serializer.errors},
+                    status=http_status.HTTP_400_BAD_REQUEST
+                )
+            
+            filters = serializer.validated_data
+            report_type = filters['report_type']
+            format_type = filters.get('format', 'json')
+            
+            # Initialize report service
+            report_service = ReportGenerationService(request.user)
+            
+            # Generate report based on type
+            if report_type == 'users':
+                report_data, summary_stats, key_metrics, total_records = report_service.generate_users_report(filters)
+                report_title = "Users Report"
+                
+            elif report_type == 'incidents':
+                report_data, summary_stats, key_metrics, total_records = report_service.generate_incidents_report(filters)
+                report_title = "Incidents Report"
+                
+            elif report_type == 'audits':
+                report_data, summary_stats, key_metrics, total_records = report_service.generate_audits_report(filters)
+                report_title = "Audits Report"
+                
+            elif report_type == 'departments':
+                report_data, summary_stats, key_metrics, total_records = report_service.generate_departments_report(filters)
+                report_title = "Departments Report"
+                
+            elif report_type == 'trainings':
+                report_data, summary_stats, key_metrics, total_records = report_service.generate_trainings_report(filters)
+                report_title = "Trainings Report"
+                
+            elif report_type == 'activity_logs':
+                # This would be similar to other reports - implementing basic version
+                report_data, summary_stats, key_metrics, total_records = [], {}, [], 0
+                report_title = "Activity Logs Report"
+                
+            elif report_type == 'user_training_progress':
+                # This would be similar to other reports - implementing basic version
+                report_data, summary_stats, key_metrics, total_records = [], {}, [], 0
+                report_title = "User Training Progress Report"
+                
+            else:
+                return Response(
+                    {'error': f'Unsupported report type: {report_type}'},
+                    status=http_status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Calculate pagination
+            page = filters.get('page', 1)
+            page_size = filters.get('page_size', 50)
+            total_pages = (total_records + page_size - 1) // page_size
+            
+            # Prepare summary
+            summary = {
+                'report_type': report_title,
+                'filters_applied': {
+                    k: v for k, v in filters.items() 
+                    if v not in [None, '', []] and k not in ['page', 'page_size', 'format']
+                },
+                'total_records': total_records,
+                'date_range': {
+                    'start_date': filters.get('start_date'),
+                    'end_date': filters.get('end_date')
+                },
+                'generated_at': timezone.now(),
+                'generated_by': request.user.full_name,
+                'summary_stats': summary_stats,
+                'key_metrics': key_metrics,
+                'data_preview': report_data[:5] if report_data else [],  # First 5 records as preview
+                'export_format': format_type,
+                'total_pages': total_pages,
+                'current_page': page
+            }
+            
+            # Prepare response data
+            response_data = {
+                'summary': summary,
+                'data': report_data,
+                'pagination': {
+                    'current_page': page,
+                    'page_size': page_size,
+                    'total_records': total_records,
+                    'total_pages': total_pages,
+                    'has_next': page < total_pages,
+                    'has_previous': page > 1
+                }
+            }
+            
+            # Display on terminal if requested
+            if format_type == 'terminal':
+                self.display_report_on_terminal(summary, report_data)
+            
+            # Return response based on format
+            if format_type == 'csv':
+                return self.export_report_to_csv(response_data, report_title)
+            else:  # JSON
+                return Response(response_data, status=http_status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Report generation error: {str(e)}", exc_info=True)
+            return Response(
+                {'error': 'Failed to generate report', 'details': str(e)},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def display_report_on_terminal(self, summary, data):
+        """Display report summary and data on terminal"""
+        try:
+            print("\n" + "="*80)
+            print(f"REPORT: {summary['report_type']}")
+            print("="*80)
+            
+            print(f"\nGENERATED BY: {summary['generated_by']}")
+            print(f"GENERATED AT: {summary['generated_at'].strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"TOTAL RECORDS: {summary['total_records']}")
+            
+            if summary['date_range']['start_date']:
+                print(f"DATE RANGE: {summary['date_range']['start_date']} to {summary['date_range']['end_date']}")
+            
+            print("\n" + "-"*80)
+            print("APPLIED FILTERS:")
+            for key, value in summary['filters_applied'].items():
+                print(f"  {key}: {value}")
+            
+            print("\n" + "-"*80)
+            print("SUMMARY STATISTICS:")
+            for key, value in summary['summary_stats'].items():
+                if isinstance(value, dict):
+                    print(f"  {key}:")
+                    for sub_key, sub_value in value.items():
+                        print(f"    {sub_key}: {sub_value}")
+                else:
+                    print(f"  {key}: {value}")
+            
+            print("\n" + "-"*80)
+            print("KEY METRICS:")
+            for metric in summary['key_metrics']:
+                print(f"  • {metric}")
+            
+            print("\n" + "-"*80)
+            print(f"DATA PREVIEW (First {len(summary['data_preview'])} records):")
+            if summary['data_preview']:
+                # Display first record as sample
+                first_record = summary['data_preview'][0]
+                for key, value in first_record.items():
+                    print(f"  {key}: {value}")
+                print(f"\n  ... and {len(summary['data_preview'])-1} more records in preview")
+            else:
+                print("  No data to display")
+            
+            print("\n" + "-"*80)
+            print(f"TOTAL DATA RECORDS: {len(data)}")
+            
+            if data:
+                print("\nFIRST RECORD DETAILS:")
+                first_data = data[0]
+                for key, value in first_data.items():
+                    value_str = str(value)
+                    if len(value_str) > 100:
+                        value_str = value_str[:97] + "..."
+                    print(f"  {key}: {value_str}")
+            
+            print("\n" + "="*80 + "\n")
+            
+        except Exception as e:
+            logger.error(f"Terminal display error: {str(e)}")
+    
+    def export_report_to_csv(self, response_data, report_title):
+        """Export report to CSV format"""
+        try:
+            import csv
+            from io import StringIO
+            
+            output = StringIO()
+            writer = csv.writer(output)
+            
+            # Write header
+            writer.writerow([report_title])
+            writer.writerow(['Generated By:', response_data['summary']['generated_by']])
+            writer.writerow(['Generated At:', response_data['summary']['generated_at'].strftime('%Y-%m-%d %H:%M:%S')])
+            writer.writerow(['Total Records:', response_data['summary']['total_records']])
+            writer.writerow([])
+            
+            # Write summary statistics
+            writer.writerow(['SUMMARY STATISTICS'])
+            for key, value in response_data['summary']['summary_stats'].items():
+                if isinstance(value, dict):
+                    writer.writerow([f"{key}:"])
+                    for sub_key, sub_value in value.items():
+                        writer.writerow(['', sub_key, sub_value])
+                else:
+                    writer.writerow([key, value])
+            writer.writerow([])
+            
+            # Write data headers if data exists
+            if response_data['data']:
+                writer.writerow(['DETAILED DATA'])
+                # Get headers from first data item
+                headers = list(response_data['data'][0].keys())
+                writer.writerow(headers)
+                
+                # Write data rows
+                for row in response_data['data']:
+                    writer.writerow([row.get(header, '') for header in headers])
+            
+            # Prepare response
+            csv_content = output.getvalue()
+            response = HttpResponse(csv_content, content_type='text/csv')
+            filename = f"{report_title.replace(' ', '_').lower()}_{timezone.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"CSV export error: {str(e)}")
+            return Response(
+                {'error': 'Failed to generate CSV export'},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+# ==================== ADDITIONAL REPORT ENDPOINTS ====================
+class AvailableReportTypesView(APIView):
+    """API endpoint to get available report types for the current user"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            user = request.user
+            
+            # Base report types available to all users
+            report_types = [
+                {
+                    'value': 'users',
+                    'label': 'Users Report',
+                    'description': 'Detailed report of users with filtering options',
+                    'available': user.role in ['admin', 'hr_manager', 'security_analyst', 'compliance_officer']
+                },
+                {
+                    'value': 'incidents',
+                    'label': 'Incidents Report',
+                    'description': 'Comprehensive incident tracking and analysis report',
+                    'available': user.role in ['admin', 'hr_manager', 'security_analyst', 'compliance_officer']
+                },
+                {
+                    'value': 'audits',
+                    'description': 'Compliance audit reports and findings',
+                    'available': user.role in ['admin', 'compliance_officer', 'security_analyst']
+                },
+                {
+                    'value': 'departments',
+                    'label': 'Departments Report',
+                    'description': 'Department-wise analysis and metrics',
+                    'available': user.role in ['admin', 'hr_manager']
+                },
+                {
+                    'value': 'trainings',
+                    'label': 'Trainings Report',
+                    'description': 'Training progress and completion reports',
+                    'available': user.role in ['admin', 'hr_manager', 'security_analyst']
+                },
+                {
+                    'value': 'activity_logs',
+                    'label': 'Activity Logs Report',
+                    'description': 'User activity and system logs report',
+                    'available': user.role in ['admin', 'security_analyst', 'compliance_officer']
+                },
+                {
+                    'value': 'user_training_progress',
+                    'label': 'User Training Progress Report',
+                    'description': 'Individual user training progress and performance',
+                    'available': user.role in ['admin', 'hr_manager']
+                }
+            ]
+            
+            # Filter based on user role
+            available_reports = [
+                report for report in report_types 
+                if report['available'] or user.role == 'admin'
+            ]
+            
+            # Add filter options for each report type
+            for report in available_reports:
+                report['filters'] = self.get_available_filters_for_report(report['value'], user)
+            
+            return Response({'report_types': available_reports}, status=http_status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error getting report types: {str(e)}")
+            return Response(
+                {'error': 'Failed to get available report types'},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    def get_available_filters_for_report(self, report_type, user):
+        """Get available filters for specific report type"""
+        filters = []
+        
+        # Common filters
+        if report_type in ['users', 'incidents', 'audits', 'activity_logs']:
+            filters.append({
+                'name': 'start_date',
+                'type': 'date',
+                'label': 'Start Date',
+                'required': False
+            })
+            filters.append({
+                'name': 'end_date',
+                'type': 'date',
+                'label': 'End Date',
+                'required': False
+            })
+        
+        # Report-specific filters
+        if report_type == 'users':
+            filters.append({
+                'name': 'role',
+                'type': 'select',
+                'label': 'User Role',
+                'options': [
+                    {'value': role[0], 'label': role[1]} 
+                    for role in CustomUser.ROLE_CHOICES
+                ],
+                'required': False
+            })
+            filters.append({
+                'name': 'status',
+                'type': 'select',
+                'label': 'User Status',
+                'options': [
+                    {'value': status[0], 'label': status[1]} 
+                    for status in CustomUser.STATUS_CHOICES
+                ],
+                'required': False
+            })
+            
+            # Department filter based on user role
+            if user.role in ['admin', 'hr_manager']:
+                filters.append({
+                    'name': 'department',
+                    'type': 'select',
+                    'label': 'Department',
+                    'options': [
+                        {'value': dept.id, 'label': dept.name}
+                        for dept in Department.objects.filter(status='active')
+                    ],
+                    'required': False
+                })
+        
+        elif report_type == 'incidents':
+            filters.append({
+                'name': 'severity',
+                'type': 'select',
+                'label': 'Severity Level',
+                'options': [
+                    {'value': 'critical', 'label': 'Critical'},
+                    {'value': 'high', 'label': 'High'},
+                    {'value': 'medium', 'label': 'Medium'},
+                    {'value': 'low', 'label': 'Low'}
+                ],
+                'required': False
+            })
+            filters.append({
+                'name': 'incident_status',
+                'type': 'select',
+                'label': 'Incident Status',
+                'options': [
+                    {'value': status[0], 'label': status[1]} 
+                    for status in Incident.INCIDENT_STATUS_CHOICES
+                ],
+                'required': False
+            })
+        
+        elif report_type == 'audits':
+            filters.append({
+                'name': 'audit_status',
+                'type': 'select',
+                'label': 'Audit Status',
+                'options': [
+                    {'value': status[0], 'label': status[1]} 
+                    for status in ComplianceAudit.AUDIT_STATUS
+                ],
+                'required': False
+            })
+            filters.append({
+                'name': 'compliance_standard',
+                'type': 'select',
+                'label': 'Compliance Standard',
+                'options': [
+                    {'value': std[0], 'label': std[1]} 
+                    for std in ComplianceStandard.STANDARD_TYPES
+                ],
+                'required': False
+            })
+        
+        return filters
+
+
+class ReportHistoryView(APIView):
+    """API endpoint to view report generation history"""
+    permission_classes = [IsAuthenticated]
+    
+    def get(self, request):
+        try:
+            # In a real implementation, you would store generated reports
+            # For now, return a placeholder response
+            return Response({
+                'message': 'Report history endpoint',
+                'note': 'Implement report storage and retrieval logic here'
+            }, status=http_status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Error getting report history: {str(e)}")
+            return Response(
+                {'error': 'Failed to get report history'},
+                status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

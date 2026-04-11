@@ -1,560 +1,251 @@
-# reportApp/serializers.py
-
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status as http_status
+from rest_framework.permissions import IsAuthenticated
 from rest_framework import serializers
-from userApp.models import CustomUser
+from django.db.models import Count, Avg, Q, Sum, F
+from django.db.models.functions import TruncDate
+from datetime import datetime, timedelta
+from django.utils import timezone
+import csv
+import json
+from io import StringIO, BytesIO
+from django.http import HttpResponse
+from django.db import connection
+import logging
+
+# Import models
+from userApp.models import CustomUser, UserLog
 from departmentApp.models import Department
-from onboarding.models import (
-    OnboardingModule, MenteeOnboardingProgress, 
-    OnboardingChecklist, MenteeChecklistProgress,
-    OnboardingNotification, OnboardingDeadline
-)
-from mentorshipApp.models import (
-    ProgramSessionTemplate, MentorshipProgram, Mentorship,
-    MentorshipProgramProgress, MentorshipSession,
-    MentorshipMessage, MentorshipReview
-)
-from chatApp.models import (
-    ChatRoom, ChatParticipant, Message, 
-    VideoCall, CallParticipant, TypingIndicator
-)
-from notificationApp.models import (
-    ChatNotification, SystemNotification,
-    UserNotificationPreference, NotificationLog
-)
+from incidentApp.models import Incident
+from complianceAuditApp.models import ComplianceAudit, ComplianceStandard, ControlAssessment
+from trainingApp.models import Training
+from trainingCandidateApp.models import Candidate
+from learningProgressApp.models import LearningProgress
+
+logger = logging.getLogger(__name__)
 
 
-# ==================== USER APP SERIALIZERS ====================
-class CustomUserSerializer(serializers.ModelSerializer):
-    """Serializer for CustomUser model"""
-    department_name = serializers.SerializerMethodField()
-    departments_list = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = CustomUser
-        fields = [
-            'id', 'phone_number', 'email', 'work_mail_address',
-            'full_name', 'role', 'department', 'department_name',
-            'departments_list', 'status', 'availability_status',
-            'is_active', 'is_staff', 'created_at', 'created_by'
-        ]
-    
-    def get_department_name(self, obj):
-        return obj.department.name if obj.department else None
-    
-    def get_departments_list(self, obj):
-        if obj.role == 'mentor':
-            return list(obj.departments.values_list('name', flat=True))
-        return []
+# Serializers
+class DashboardStatsSerializer(serializers.Serializer):
+    """Serializer for dashboard statistics"""
+    total_users = serializers.IntegerField()
+    active_users = serializers.IntegerField()
+    pending_users = serializers.IntegerField()
+    total_incidents = serializers.IntegerField()
+    open_incidents = serializers.IntegerField()
+    critical_incidents = serializers.IntegerField()
+    total_audits = serializers.IntegerField()
+    active_audits = serializers.IntegerField()
+    total_trainings = serializers.IntegerField()
+    ongoing_trainings = serializers.IntegerField()
+    compliance_score = serializers.FloatField()
+    risk_score = serializers.FloatField()
+    department_breakdown = serializers.JSONField()
 
 
-# ==================== DEPARTMENT APP SERIALIZERS ====================
-class DepartmentSerializer(serializers.ModelSerializer):
-    """Serializer for Department model"""
-    mentee_count = serializers.SerializerMethodField()
-    mentor_count = serializers.SerializerMethodField()
-    created_by_name = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = Department
-        fields = [
-            'id', 'name', 'description', 'status',
-            'created_at', 'created_by', 'created_by_name',
-            'updated_at', 'mentee_count', 'mentor_count'
-        ]
-    
-    def get_mentee_count(self, obj):
-        return obj.get_mentee_count()
-    
-    def get_mentor_count(self, obj):
-        return obj.get_mentor_count()
-    
-    def get_created_by_name(self, obj):
-        return obj.created_by.full_name if obj.created_by else None
+class AccessTrendSerializer(serializers.Serializer):
+    """Serializer for access trends data"""
+    date = serializers.DateField()
+    successful_logins = serializers.IntegerField()
+    failed_logins = serializers.IntegerField()
+    flagged_activities = serializers.IntegerField()
 
 
-# ==================== ONBOARDING APP SERIALIZERS ====================
-class OnboardingModuleSerializer(serializers.ModelSerializer):
-    """Serializer for OnboardingModule model"""
-    department_names = serializers.SerializerMethodField()
-    created_by_name = serializers.SerializerMethodField()
-    completion_rate = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = OnboardingModule
-        fields = [
-            'id', 'title', 'description', 'module_type',
-            'departments', 'department_names', 'order',
-            'is_required', 'duration_minutes', 'content',
-            'resources', 'multimedia_files', 'is_active',
-            'created_at', 'updated_at', 'created_by',
-            'created_by_name', 'completion_rate'
-        ]
-    
-    def get_department_names(self, obj):
-        return list(obj.departments.values_list('name', flat=True))
-    
-    def get_created_by_name(self, obj):
-        return obj.created_by.full_name if obj.created_by else None
-    
-    def get_completion_rate(self, obj):
-        return obj.get_completion_rate()
+class IncidentTrendSerializer(serializers.Serializer):
+    """Serializer for incident trends"""
+    date = serializers.DateField()
+    total_incidents = serializers.IntegerField()
+    resolved_incidents = serializers.IntegerField()
+    average_resolution_time = serializers.FloatField()
 
 
-class MenteeOnboardingProgressSerializer(serializers.ModelSerializer):
-    """Serializer for MenteeOnboardingProgress model"""
-    mentee_name = serializers.SerializerMethodField()
-    module_title = serializers.SerializerMethodField()
-    department_name = serializers.SerializerMethodField()
-    assigned_by_name = serializers.SerializerMethodField()
-    is_overdue = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = MenteeOnboardingProgress
-        fields = [
-            'id', 'mentee', 'mentee_name', 'module',
-            'module_title', 'department_name', 'status',
-            'progress_percentage', 'started_at', 'completed_at',
-            'due_date', 'notes', 'time_spent_minutes',
-            'last_updated', 'assigned_by', 'assigned_by_name',
-            'assigned_at', 'is_overdue'
-        ]
-    
-    def get_mentee_name(self, obj):
-        return obj.mentee.full_name
-    
-    def get_module_title(self, obj):
-        return obj.module.title
-    
-    def get_department_name(self, obj):
-        return obj.mentee.department.name if obj.mentee.department else None
-    
-    def get_assigned_by_name(self, obj):
-        return obj.assigned_by.full_name if obj.assigned_by else None
-    
-    def get_is_overdue(self, obj):
-        return obj.is_overdue()
+class DepartmentPerformanceSerializer(serializers.Serializer):
+    """Serializer for department performance metrics"""
+    department_id = serializers.IntegerField()
+    department_name = serializers.CharField()
+    total_users = serializers.IntegerField()
+    active_incidents = serializers.IntegerField()
+    compliance_score = serializers.FloatField()
+    training_completion_rate = serializers.FloatField()
+    risk_level = serializers.CharField()
 
 
-class OnboardingChecklistSerializer(serializers.ModelSerializer):
-    """Serializer for OnboardingChecklist model"""
-    module_title = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = OnboardingChecklist
-        fields = [
-            'id', 'module', 'module_title', 'title',
-            'description', 'order', 'is_required',
-            'estimated_minutes'
-        ]
-    
-    def get_module_title(self, obj):
-        return obj.module.title
+class UserActivitySerializer(serializers.Serializer):
+    """Serializer for user activity logs"""
+    user_id = serializers.IntegerField()
+    user_name = serializers.CharField()
+    user_email = serializers.EmailField()
+    role = serializers.CharField()
+    last_activity = serializers.DateTimeField()
+    total_activities = serializers.IntegerField()
+    flagged_activities = serializers.IntegerField()
 
 
-class MenteeChecklistProgressSerializer(serializers.ModelSerializer):
-    """Serializer for MenteeChecklistProgress model"""
-    mentee_name = serializers.SerializerMethodField()
-    checklist_title = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = MenteeChecklistProgress
-        fields = [
-            'id', 'mentee', 'mentee_name', 'checklist_item',
-            'checklist_title', 'is_completed', 'completed_at',
-            'time_spent_minutes', 'notes'
-        ]
-    
-    def get_mentee_name(self, obj):
-        return obj.mentee.full_name
-    
-    def get_checklist_title(self, obj):
-        return obj.checklist_item.title
+class RecentActivitySerializer(serializers.Serializer):
+    """Serializer for recent activities"""
+    timestamp = serializers.DateTimeField()
+    activity = serializers.CharField()
+    description = serializers.CharField()
+    user = serializers.CharField()
+    severity = serializers.CharField(required=False)
+    category = serializers.CharField()
 
 
-class OnboardingNotificationSerializer(serializers.ModelSerializer):
-    """Serializer for OnboardingNotification model"""
-    recipient_name = serializers.SerializerMethodField()
-    module_title = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = OnboardingNotification
-        fields = [
-            'id', 'recipient', 'recipient_name',
-            'notification_type', 'title', 'message',
-            'related_module', 'module_title',
-            'related_progress', 'sent_at', 'is_read', 'read_at'
-        ]
-    
-    def get_recipient_name(self, obj):
-        return obj.recipient.full_name
-    
-    def get_module_title(self, obj):
-        return obj.related_module.title if obj.related_module else None
+class SystemHealthSerializer(serializers.Serializer):
+    """Serializer for system health metrics"""
+    component = serializers.CharField()
+    status = serializers.CharField()
+    uptime = serializers.FloatField()
+    last_check = serializers.DateTimeField()
+    issues = serializers.IntegerField()
 
 
-class OnboardingDeadlineSerializer(serializers.ModelSerializer):
-    """Serializer for OnboardingDeadline model"""
-    module_title = serializers.SerializerMethodField()
-    mentee_name = serializers.SerializerMethodField()
-    extension_granted_by_name = serializers.SerializerMethodField()
-    days_remaining = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = OnboardingDeadline
-        fields = [
-            'id', 'module', 'module_title', 'mentee',
-            'mentee_name', 'due_date', 'original_due_date',
-            'is_extended', 'extension_reason',
-            'extension_granted_by', 'extension_granted_by_name',
-            'created_at', 'updated_at', 'days_remaining'
-        ]
-    
-    def get_module_title(self, obj):
-        return obj.module.title
-    
-    def get_mentee_name(self, obj):
-        return obj.mentee.full_name
-    
-    def get_extension_granted_by_name(self, obj):
-        return obj.extension_granted_by.full_name if obj.extension_granted_by else None
-    
-    def get_days_remaining(self, obj):
-        return obj.get_days_remaining()
+class TrainingProgressSerializer(serializers.Serializer):
+    """Serializer for training progress"""
+    training_id = serializers.IntegerField()
+    training_name = serializers.CharField()
+    total_candidates = serializers.IntegerField()
+    completed_candidates = serializers.IntegerField()
+    completion_rate = serializers.FloatField()
+    average_time = serializers.FloatField()
 
 
-# ==================== MENTORSHIP APP SERIALIZERS ====================
-class ProgramSessionTemplateSerializer(serializers.ModelSerializer):
-    """Serializer for ProgramSessionTemplate model"""
-    
-    class Meta:
-        model = ProgramSessionTemplate
-        fields = [
-            'id', 'title', 'session_type', 'description',
-            'objectives', 'requirements', 'duration_minutes',
-            'order', 'is_required', 'is_active',
-            'created_at', 'updated_at'
-        ]
+class RiskDistributionSerializer(serializers.Serializer):
+    """Serializer for risk distribution"""
+    risk_level = serializers.CharField()
+    count = serializers.IntegerField()
+    percentage = serializers.FloatField()
+    departments = serializers.JSONField()
 
 
-class MentorshipProgramSerializer(serializers.ModelSerializer):
-    """Serializer for MentorshipProgram model"""
-    department_name = serializers.SerializerMethodField()
-    created_by_name = serializers.SerializerMethodField()
-    total_sessions = serializers.SerializerMethodField()
-    total_duration_hours = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = MentorshipProgram
-        fields = [
-            'id', 'name', 'department', 'department_name',
-            'description', 'status', 'total_days',
-            'objectives', 'prerequisites', 'created_at',
-            'updated_at', 'created_by', 'created_by_name',
-            'total_sessions', 'total_duration_hours'
-        ]
-    
-    def get_department_name(self, obj):
-        return obj.department.name
-    
-    def get_created_by_name(self, obj):
-        return obj.created_by.full_name if obj.created_by else None
-    
-    def get_total_sessions(self, obj):
-        return obj.get_total_sessions()
-    
-    def get_total_duration_hours(self, obj):
-        return obj.get_total_duration_hours()
+class FilterSerializer(serializers.Serializer):
+    """Serializer for dashboard filters"""
+    start_date = serializers.DateField(required=False)
+    end_date = serializers.DateField(required=False)
+    department = serializers.IntegerField(required=False, allow_null=True)
+    status = serializers.CharField(required=False)
+    severity = serializers.CharField(required=False)
+    timeframe = serializers.ChoiceField(
+        choices=['today', 'week', 'month', 'quarter', 'year', 'custom'],
+        default='month'
+    )
 
 
-class MentorshipSerializer(serializers.ModelSerializer):
-    """Serializer for Mentorship model"""
-    mentor_name = serializers.SerializerMethodField()
-    mentee_name = serializers.SerializerMethodField()
-    department_name = serializers.SerializerMethodField()
-    current_program_name = serializers.SerializerMethodField()
-    created_by_name = serializers.SerializerMethodField()
-    progress_percentage = serializers.SerializerMethodField()
-    sessions_completed = serializers.SerializerMethodField()
-    total_sessions = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = Mentorship
-        fields = [
-            'id', 'mentor', 'mentor_name', 'mentee', 'mentee_name',
-            'department', 'department_name', 'current_program',
-            'current_program_name', 'status', 'start_date',
-            'expected_end_date', 'actual_end_date', 'rating',
-            'goals', 'achievements', 'feedback', 'notes',
-            'created_by', 'created_by_name', 'created_at',
-            'updated_at', 'progress_percentage', 'sessions_completed',
-            'total_sessions'
-        ]
-    
-    def get_mentor_name(self, obj):
-        return obj.mentor.full_name
-    
-    def get_mentee_name(self, obj):
-        return obj.mentee.full_name
-    
-    def get_department_name(self, obj):
-        return obj.department.name
-    
-    def get_current_program_name(self, obj):
-        return obj.current_program.name if obj.current_program else None
-    
-    def get_created_by_name(self, obj):
-        return obj.created_by.full_name if obj.created_by else None
-    
-    def get_progress_percentage(self, obj):
-        return obj.get_progress_percentage()
-    
-    def get_sessions_completed(self, obj):
-        return obj.get_sessions_completed()
-    
-    def get_total_sessions(self, obj):
-        return obj.get_total_sessions()
+class ExportRequestSerializer(serializers.Serializer):
+    """Serializer for export requests"""
+    format = serializers.ChoiceField(choices=['json', 'csv', 'pdf'])
+    filters = FilterSerializer(required=False)
 
 
-class MentorshipProgramProgressSerializer(serializers.ModelSerializer):
-    """Serializer for MentorshipProgramProgress model"""
-    mentorship_info = serializers.SerializerMethodField()
-    program_name = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = MentorshipProgramProgress
-        fields = [
-            'id', 'mentorship', 'mentorship_info', 'program',
-            'program_name', 'status', 'sessions_completed',
-            'total_sessions', 'progress_percentage',
-            'started_at', 'completed_at'
-        ]
-    
-    def get_mentorship_info(self, obj):
-        return f"{obj.mentorship.mentor.full_name} → {obj.mentorship.mentee.full_name}"
-    
-    def get_program_name(self, obj):
-        return obj.program.name
+class ReportDataSerializer(serializers.Serializer):
+    """Main report data serializer"""
+    stats = DashboardStatsSerializer()
+    access_trends = AccessTrendSerializer(many=True)
+    incident_trends = IncidentTrendSerializer(many=True)
+    department_performance = DepartmentPerformanceSerializer(many=True)
+    recent_activities = RecentActivitySerializer(many=True)
+    system_health = SystemHealthSerializer(many=True)
+    training_progress = TrainingProgressSerializer(many=True)
+    risk_distribution = RiskDistributionSerializer(many=True)
+    user_activities = UserActivitySerializer(many=True)
+    generated_at = serializers.DateTimeField()
+    filters = FilterSerializer(required=False)
 
 
-class MentorshipSessionSerializer(serializers.ModelSerializer):
-    """Serializer for MentorshipSession model"""
-    mentorship_info = serializers.SerializerMethodField()
-    program_name = serializers.SerializerMethodField()
-    template_title = serializers.SerializerMethodField()
-    completed_by_name = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = MentorshipSession
-        fields = [
-            'id', 'mentorship', 'mentorship_info', 'program',
-            'program_name', 'session_template', 'template_title',
-            'program_session_number', 'overall_session_number',
-            'status', 'scheduled_date', 'actual_date',
-            'duration_minutes', 'agenda', 'objectives',
-            'notes', 'action_items', 'mentor_rating',
-            'mentor_feedback', 'mentee_feedback',
-            'meeting_link', 'location', 'completed_by',
-            'completed_by_name', 'created_at', 'updated_at'
-        ]
-    
-    def get_mentorship_info(self, obj):
-        return f"{obj.mentorship.mentor.full_name} → {obj.mentorship.mentee.full_name}"
-    
-    def get_program_name(self, obj):
-        return obj.program.name if obj.program else None
-    
-    def get_template_title(self, obj):
-        return obj.session_template.title if obj.session_template else None
-    
-    def get_completed_by_name(self, obj):
-        return obj.completed_by.full_name if obj.completed_by else None
 
 
-class MentorshipMessageSerializer(serializers.ModelSerializer):
-    """Serializer for MentorshipMessage model"""
-    sender_name = serializers.SerializerMethodField()
-    mentorship_info = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = MentorshipMessage
-        fields = [
-            'id', 'mentorship', 'mentorship_info', 'sender',
-            'sender_name', 'message', 'message_type',
-            'attachments', 'is_read', 'read_at', 'created_at'
-        ]
-    
-    def get_sender_name(self, obj):
-        return obj.sender.full_name
-    
-    def get_mentorship_info(self, obj):
-        return f"{obj.mentorship.mentor.full_name} → {obj.mentorship.mentee.full_name}"
 
 
-class MentorshipReviewSerializer(serializers.ModelSerializer):
-    """Serializer for MentorshipReview model"""
-    mentorship_info = serializers.SerializerMethodField()
-    reviewer_name = serializers.SerializerMethodField()
+
+# ==================== SERIALIZERS ====================
+class ReportFilterSerializer(serializers.Serializer):
+    """Serializer for report filters"""
+    report_type = serializers.ChoiceField(
+        choices=[
+            ('users', 'Users Report'),
+            ('incidents', 'Incidents Report'),
+            ('audits', 'Audits Report'),
+            ('departments', 'Departments Report'),
+            ('trainings', 'Trainings Report'),
+            ('compliance', 'Compliance Report'),
+            ('activity_logs', 'Activity Logs Report'),
+            ('user_training_progress', 'User Training Progress Report'),
+        ],
+        required=True
+    )
     
-    class Meta:
-        model = MentorshipReview
-        fields = [
-            'id', 'mentorship', 'mentorship_info', 'reviewer',
-            'reviewer_name', 'reviewer_type', 'rating',
-            'communication_rating', 'knowledge_rating',
-            'helpfulness_rating', 'review_text',
-            'would_recommend', 'created_at', 'updated_at'
-        ]
+    # Date filters
+    start_date = serializers.DateField(required=False, allow_null=True)
+    end_date = serializers.DateField(required=False, allow_null=True)
     
-    def get_mentorship_info(self, obj):
-        return f"{obj.mentorship.mentor.full_name} → {obj.mentorship.mentee.full_name}"
+    # Common filters
+    status = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    severity = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    department = serializers.IntegerField(required=False, allow_null=True)
+    role = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     
-    def get_reviewer_name(self, obj):
-        return obj.reviewer.full_name
+    # Pagination
+    page = serializers.IntegerField(default=1, min_value=1)
+    page_size = serializers.IntegerField(default=50, min_value=10, max_value=1000)
+    
+    # Format
+    format = serializers.ChoiceField(
+        choices=['json', 'csv', 'terminal'],
+        default='json'
+    )
+    
+    # Specific filters for different report types
+    incident_status = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    audit_status = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    training_status = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    compliance_standard = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    
+    def validate(self, data):
+        # Validate date range
+        if data.get('start_date') and data.get('end_date'):
+            if data['start_date'] > data['end_date']:
+                raise serializers.ValidationError({
+                    'start_date': 'Start date cannot be after end date'
+                })
+        
+        # Set end_date to today if not provided
+        if not data.get('end_date'):
+            data['end_date'] = datetime.now().date()
+        
+        # Set start_date to 30 days before end_date if not provided
+        if not data.get('start_date'):
+            data['start_date'] = data['end_date'] - timedelta(days=30)
+        
+        return data
 
 
-# ==================== CHAT APP SERIALIZERS ====================
-class ChatRoomSerializer(serializers.ModelSerializer):
-    """Serializer for ChatRoom model"""
-    created_by_name = serializers.SerializerMethodField()
-    participant_count = serializers.SerializerMethodField()
-    department_name = serializers.SerializerMethodField()
-    mentorship_info = serializers.SerializerMethodField()
+class ReportSummarySerializer(serializers.Serializer):
+    """Serializer for report summary"""
+    report_type = serializers.CharField()
+    filters_applied = serializers.DictField()
+    total_records = serializers.IntegerField()
+    date_range = serializers.DictField()
+    generated_at = serializers.DateTimeField()
+    generated_by = serializers.CharField()
     
-    class Meta:
-        model = ChatRoom
-        fields = [
-            'id', 'name', 'chat_type', 'mentorship',
-            'mentorship_info', 'department', 'department_name',
-            'created_by', 'created_by_name', 'is_active',
-            'created_at', 'updated_at', 'participant_count'
-        ]
+    # Summary statistics
+    summary_stats = serializers.DictField()
     
-    def get_created_by_name(self, obj):
-        return obj.created_by.full_name if obj.created_by else None
+    # Key metrics
+    key_metrics = serializers.ListField()
     
-    def get_participant_count(self, obj):
-        return obj.participants.count()
+    # Data preview
+    data_preview = serializers.ListField()
     
-    def get_department_name(self, obj):
-        return obj.department.name if obj.department else None
-    
-    def get_mentorship_info(self, obj):
-        if obj.mentorship:
-            return f"{obj.mentorship.mentor.full_name} → {obj.mentorship.mentee.full_name}"
-        return None
+    # Export info
+    export_format = serializers.CharField()
+    total_pages = serializers.IntegerField()
+    current_page = serializers.IntegerField()
 
 
-class MessageSerializer(serializers.ModelSerializer):
-    """Serializer for Message model"""
-    sender_name = serializers.SerializerMethodField()
-    chat_room_name = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = Message
-        fields = [
-            'id', 'chat_room', 'chat_room_name', 'sender',
-            'sender_name', 'message_type', 'content',
-            'attachment', 'is_deleted', 'deleted_at',
-            'created_at', 'updated_at'
-        ]
-    
-    def get_sender_name(self, obj):
-        return obj.sender.full_name
-    
-    def get_chat_room_name(self, obj):
-        return obj.chat_room.name
-
-
-class VideoCallSerializer(serializers.ModelSerializer):
-    """Serializer for VideoCall model"""
-    caller_name = serializers.SerializerMethodField()
-    chat_room_name = serializers.SerializerMethodField()
-    participant_count = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = VideoCall
-        fields = [
-            'id', 'chat_room', 'chat_room_name', 'call_id',
-            'caller', 'caller_name', 'status', 'started_at',
-            'ended_at', 'duration', 'created_at',
-            'updated_at', 'participant_count'
-        ]
-    
-    def get_caller_name(self, obj):
-        return obj.caller.full_name
-    
-    def get_chat_room_name(self, obj):
-        return obj.chat_room.name
-    
-    def get_participant_count(self, obj):
-        return obj.participants.count()
-
-
-# ==================== NOTIFICATION APP SERIALIZERS ====================
-class ChatNotificationSerializer(serializers.ModelSerializer):
-    """Serializer for ChatNotification model"""
-    recipient_name = serializers.SerializerMethodField()
-    sender_name = serializers.SerializerMethodField()
-    chat_room_name = serializers.SerializerMethodField()
-    mentorship_info = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = ChatNotification
-        fields = [
-            'id', 'recipient', 'recipient_name', 'sender',
-            'sender_name', 'chat_room', 'chat_room_name',
-            'mentorship', 'mentorship_info', 'notification_type',
-            'title', 'message', 'metadata', 'is_read',
-            'is_archived', 'created_at', 'read_at', 'archived_at'
-        ]
-    
-    def get_recipient_name(self, obj):
-        return obj.recipient.full_name
-    
-    def get_sender_name(self, obj):
-        return obj.sender.full_name if obj.sender else None
-    
-    def get_chat_room_name(self, obj):
-        return obj.chat_room.name if obj.chat_room else None
-    
-    def get_mentorship_info(self, obj):
-        if obj.mentorship:
-            return f"{obj.mentorship.mentor.full_name} → {obj.mentorship.mentee.full_name}"
-        return None
-
-
-class SystemNotificationSerializer(serializers.ModelSerializer):
-    """Serializer for SystemNotification model"""
-    created_by_name = serializers.SerializerMethodField()
-    is_active_now = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = SystemNotification
-        fields = [
-            'id', 'title', 'message', 'level', 'is_active',
-            'is_global', 'target_roles', 'target_departments',
-            'start_date', 'end_date', 'created_at',
-            'created_by', 'created_by_name', 'is_active_now'
-        ]
-    
-    def get_created_by_name(self, obj):
-        return obj.created_by.full_name if obj.created_by else None
-    
-    def get_is_active_now(self, obj):
-        return obj.is_active_now()
-
-
-class NotificationLogSerializer(serializers.ModelSerializer):
-    """Serializer for NotificationLog model"""
-    recipient_name = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = NotificationLog
-        fields = [
-            'id', 'recipient', 'recipient_name',
-            'notification_type', 'title', 'message',
-            'sent_via', 'success', 'error_message', 'created_at'
-        ]
-    
-    def get_recipient_name(self, obj):
-        return obj.recipient.full_name
+class ReportDataSerializer(serializers.Serializer):
+    """Main report data serializer"""
+    summary = ReportSummarySerializer()
+    data = serializers.ListField()
+    pagination = serializers.DictField()

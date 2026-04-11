@@ -1,0 +1,44 @@
+
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Compliance Audit Report: AUD-DB571FF4</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+                h1 { color: #1e40af; border-bottom: 2px solid #1e40af; padding-bottom: 10px; }
+                h2 { color: #374151; margin-top: 30px; }
+                .summary { background: #f3f4f6; padding: 20px; border-radius: 5px; margin: 20px 0; }
+                table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+                th { background: #1e40af; color: white; padding: 12px; text-align: left; }
+                td { padding: 10px; border-bottom: 1px solid #e5e7eb; }
+                .critical { background-color: #fef2f2; color: #dc2626; }
+                .high { background-color: #fffbeb; color: #d97706; }
+                .medium { background-color: #f0f9ff; color: #0284c7; }
+                .low { background-color: #f0fdf4; color: #16a34a; }
+                .footer { margin-top: 40px; color: #9ca3af; font-size: 12px; text-align: center; }
+            </style>
+        </head>
+        <body>
+            <h1>Compliance Audit Report</h1>
+            
+            <div class="summary">
+                <h2>Audit Details</h2>
+                <table>
+                    <tr><td><strong>Audit ID:</strong></td><td>AUD-DB571FF4</td></tr>
+                    <tr><td><strong>Title:</strong></td><td>Audit-001</td></tr>
+                    <tr><td><strong>Standard:</strong></td><td>jdkbchx (vv2.1, 2004)</td></tr>
+                    <tr><td><strong>Status:</strong></td><td>draft</td></tr>
+                    <tr><td><strong>Audit Type:</strong></td><td>internal</td></tr>
+                    <tr><td><strong>Lead Auditor:</strong></td><td>Prince MUGABE</td></tr>
+                    <tr><td><strong>Overall Score:</strong></td><td>0%</td></tr>
+                    <tr><td><strong>Compliance Rate:</strong></td><td>0%</td></tr>
+                </table>
+            </div>
+        
+            <div class="footer">
+                <p>Report generated on 2026-02-06 22:51:25</p>
+                <p>Hammer Tech AI-Enhanced Access Control & Compliance System</p>
+            </div>
+        </body>
+        </html>
+        
