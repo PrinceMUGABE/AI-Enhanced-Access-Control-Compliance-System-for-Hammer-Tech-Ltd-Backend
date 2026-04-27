@@ -2,9 +2,11 @@ from django.db import models
 from django.conf import settings
 import uuid
 from django.utils.timezone import now
+from django.core.exceptions import ValidationError
 from userApp.models import CustomUser
 from incidentApp.models import Incident
 from departmentApp.models import Department
+
 
 
 class ComplianceStandard(models.Model):
@@ -257,6 +259,8 @@ class ComplianceAudit(models.Model):
         return None
 
 
+# Add/Update these models
+
 class AuditFinding(models.Model):
     """Detailed findings from compliance audits"""
     
@@ -274,16 +278,17 @@ class AuditFinding(models.Model):
         ('critical', 'Critical'),
     ]
     
+    # Updated status choices with proper workflow
     STATUS_CHOICES = [
-        ('open', 'Open'),
-        ('in_progress', 'In Progress'),
-        ('resolved', 'Resolved'),
-        ('closed', 'Closed'),
+        ('created', 'Created'),           # Default - newly created finding
+        ('in_progress', 'In Progress'),   # Working on resolution
+        ('solved', 'Solved'),             # Solved - cannot edit/delete
+        ('closed', 'Closed'),             # Closed - final state
     ]
     
     # Basic Information
     audit = models.ForeignKey(
-        ComplianceAudit,
+        'ComplianceAudit',
         on_delete=models.CASCADE,
         related_name='findings'
     )
@@ -296,7 +301,7 @@ class AuditFinding(models.Model):
     
     # Incident Relationship
     related_incident = models.ForeignKey(
-        Incident,
+        'incidentApp.Incident',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -304,9 +309,20 @@ class AuditFinding(models.Model):
     )
     
     # Status & Tracking
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='open')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='created')
     target_completion_date = models.DateField(null=True, blank=True)
     actual_completion_date = models.DateField(null=True, blank=True)
+    
+    # Resolution information
+    resolution_notes = models.TextField(blank=True, null=True)
+    solved_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='solved_findings'
+    )
+    solved_at = models.DateTimeField(null=True, blank=True)
     
     # Responsibility
     assigned_to = models.ForeignKey(
@@ -342,15 +358,34 @@ class AuditFinding(models.Model):
         return f"{self.title}"
     
     def save(self, *args, **kwargs):
+        # If status changed to solved, set solved_at and solved_by
+        if self.pk:
+            try:
+                old_instance = AuditFinding.objects.get(pk=self.pk)
+                if old_instance.status != 'solved' and self.status == 'solved':
+                    self.solved_at = now()
+                    if hasattr(self, '_solved_by'):
+                        self.solved_by = self._solved_by
+                elif old_instance.status == 'solved' and self.status != 'solved':
+                    # Cannot change from solved back to other status
+                    raise ValidationError("Cannot change status of a solved finding.")
+            except AuditFinding.DoesNotExist:
+                pass
+        
         super().save(*args, **kwargs)
         # Update audit metrics
         self.audit.update_metrics()
     
     @property
     def is_overdue(self):
-        if self.target_completion_date and self.status in ['open', 'in_progress']:
+        if self.target_completion_date and self.status in ['created', 'in_progress']:
             return now().date() > self.target_completion_date
         return False
+    
+    @property
+    def is_editable(self):
+        """Finding is editable only if not solved or closed"""
+        return self.status not in ['solved', 'closed']
 
 
 class ControlAssessment(models.Model):
@@ -364,17 +399,18 @@ class ControlAssessment(models.Model):
         ('not_applicable', 'Not Applicable'),
     ]
     
+    # Updated remediation status with proper workflow
     REMEDIATION_STATUS = [
-        ('not_required', 'Not Required'),
-        ('open', 'Open'),
-        ('in_progress', 'In Progress'),
-        ('completed', 'Completed'),
-        ('verified', 'Verified'),
+        ('waiting', 'Waiting'),           # Default - waiting for remediation
+        ('in_progress', 'In Progress'),   # Remediation in progress
+        ('completed', 'Completed'),       # Completed - cannot edit/delete
+        ('verified', 'Verified'),         # Verified - final state
+        ('not_required', 'Not Required'), # No remediation needed
     ]
     
     # Core Information
     audit = models.ForeignKey(
-        ComplianceAudit,
+        'ComplianceAudit',
         on_delete=models.CASCADE,
         related_name='control_assessments'
     )
@@ -384,7 +420,7 @@ class ControlAssessment(models.Model):
     control_name = models.CharField(max_length=500)
     control_description = models.TextField()
     
-    # Control Category (optional for better organization)
+    # Control Category
     control_category = models.CharField(
         max_length=100,
         blank=True,
@@ -406,17 +442,25 @@ class ControlAssessment(models.Model):
     # Evidence & Documentation
     evidence = models.TextField(blank=True, null=True)
     notes = models.TextField(blank=True, null=True)
-    attachments = models.JSONField(default=list, blank=True)  # Store file references
+    attachments = models.JSONField(default=list, blank=True)
     
-    # Remediation
+    # Remediation - Updated workflow
     remediation_required = models.BooleanField(default=False)
     remediation_status = models.CharField(
         max_length=50,
         choices=REMEDIATION_STATUS,
-        default='not_required'
+        default='waiting'
     )
     remediation_deadline = models.DateField(null=True, blank=True)
     remediation_notes = models.TextField(blank=True, null=True)
+    completed_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='completed_controls'
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
     
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)
@@ -428,6 +472,7 @@ class ControlAssessment(models.Model):
             models.Index(fields=['audit', 'status']),
             models.Index(fields=['status', 'remediation_required']),
             models.Index(fields=['control_id']),
+            models.Index(fields=['remediation_status']),
         ]
     
     def __str__(self):
@@ -436,9 +481,22 @@ class ControlAssessment(models.Model):
     def save(self, *args, **kwargs):
         # Auto-generate control_id if not exists
         if not self.control_id:
-            # Get the compliance standard from the audit
             standard = self.audit.standard
             self.control_id = standard.generate_control_id()
+        
+        # If remediation status changed to completed, set completed_at and completed_by
+        if self.pk:
+            try:
+                old_instance = ControlAssessment.objects.get(pk=self.pk)
+                if old_instance.remediation_status != 'completed' and self.remediation_status == 'completed':
+                    self.completed_at = now()
+                    if hasattr(self, '_completed_by'):
+                        self.completed_by = self._completed_by
+                elif old_instance.remediation_status == 'completed' and self.remediation_status != 'completed':
+                    # Cannot change from completed back to other status
+                    raise ValidationError("Cannot change status of a completed control.")
+            except ControlAssessment.DoesNotExist:
+                pass
         
         super().save(*args, **kwargs)
         
@@ -452,8 +510,13 @@ class ControlAssessment(models.Model):
                 audit__standard=standard
             ).values('control_id').distinct().count()
             standard.save(update_fields=['total_controls'])
-
-
+    
+    @property
+    def is_editable(self):
+        """Control is editable only if not completed"""
+        return self.remediation_status != 'completed'
+    
+    
 class ComplianceReport(models.Model):
     """Generated compliance reports"""
     

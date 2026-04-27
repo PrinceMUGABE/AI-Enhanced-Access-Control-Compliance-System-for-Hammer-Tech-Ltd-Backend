@@ -123,7 +123,39 @@ def debug_request_response(func):
         
         return response
     return wrapper
+
+def get_reports_by_user_role(user):
+    """Get reports based on user role"""
+    if user.is_admin or user.role == 'security_analyst':
+        # Admin and security analysts see all reports
+        return ComplianceReport.objects.all()
+    elif user.role == 'compliance_officer':
+        # Compliance officers see reports they generated or related to their audits
+        return ComplianceReport.objects.filter(
+            Q(generated_by=user) | Q(audit__created_by=user) | Q(audit__lead_auditor=user)
+        ).distinct()
+    else:
+        return ComplianceReport.objects.filter(generated_by=user)
+    
+    
+
+def get_incidents_for_audit_creation(user):
+    """Get incidents based on user role for audit creation"""
+    if user.is_admin or user.role == 'security_analyst':
+        # Admin and security analysts see all incidents
+        return Incident.objects.all()
+    elif user.role == 'compliance_officer':
+        # Compliance officers see incidents assigned to them or created by them
+        return Incident.objects.filter(
+            Q(assigned_to=user) | Q(created_by=user)
+        ).distinct()
+    else:
+        return Incident.objects.none()
+    
+    
+    
 # ==================== STANDARD VIEWS ====================
+
 
 class ComplianceStandardViewSet(APIView):
     """Manage compliance standards"""
@@ -234,6 +266,8 @@ class ComplianceStandardViewSet(APIView):
                 'details': str(e),
                 'error_type': type(e).__name__
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 
 
 @api_view(['GET', 'PUT', 'DELETE'])
@@ -354,61 +388,39 @@ class ComplianceAuditViewSet(APIView):
     """Manage compliance audits"""
     
     permission_classes = [IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_class = AuditFilter
-    search_fields = ['title', 'description', 'audit_id']
-    ordering_fields = ['created_at', 'planned_start_date', 'overall_score']
-    
-    def get_queryset(self):
-        """Return audits based on user role"""
-        try:
-            user = self.request.user
-            
-            if user.is_admin or user.role == 'compliance_officer':
-                return ComplianceAudit.objects.select_related(
-                    'standard', 'lead_auditor', 'created_by'
-                ).prefetch_related(
-                    'related_incidents',
-                    'findings',
-                    'control_assessments'
-                ).all()
-            
-            # Non-admin users can only see completed audits they're involved in
-            return ComplianceAudit.objects.filter(
-                Q(status='completed') |
-                Q(lead_auditor=user) |
-                Q(created_by=user) |
-                Q(findings__assigned_to=user)
-            ).distinct().select_related(
-                'standard', 'lead_auditor', 'created_by'
-            ).prefetch_related(
-                'related_incidents'
-            )
-        except Exception as e:
-            logger.error(f"Error in get_queryset: {str(e)}", exc_info=True)
-            return ComplianceAudit.objects.none()
     
     @debug_request_response
     def get(self, request):
-        """List audits with filtering"""
+        """List audits based on user role with filtering"""
         try:
-            # logger.info(f"GET audits request by user: {request.user.full_name}")
-            # logger.info(f"Query params: {dict(request.query_params)}")
+            user = request.user
             
-            queryset = self.get_queryset()
-            # logger.info(f"Initial queryset count: {queryset.count()}")
+            # Get audits based on user role
+            queryset = get_audits_by_user_role(user)
             
-            # Apply filtering
-            try:
-                for backend in list(self.filter_backends):
-                    if backend == DjangoFilterBackend:
-                        queryset = self.filterset_class(request.GET, queryset=queryset).qs
-                    else:
-                        queryset = backend().filter_queryset(request, queryset, self)
-                # logger.info(f"Filtered queryset count: {queryset.count()}")
-            except Exception as filter_error:
-                logger.warning(f"Error applying filters: {str(filter_error)}")
-                # Continue with unfiltered queryset
+            # Apply filters
+            status_filter = request.query_params.get('status')
+            if status_filter:
+                queryset = queryset.filter(status=status_filter)
+            
+            audit_type = request.query_params.get('audit_type')
+            if audit_type:
+                queryset = queryset.filter(audit_type=audit_type)
+            
+            standard_id = request.query_params.get('standard_id')
+            if standard_id:
+                queryset = queryset.filter(standard_id=standard_id)
+            
+            search = request.query_params.get('search')
+            if search:
+                queryset = queryset.filter(
+                    Q(title__icontains=search) |
+                    Q(audit_id__icontains=search) |
+                    Q(description__icontains=search)
+                )
+            
+            # Order by most recent
+            queryset = queryset.order_by('-created_at')
             
             # Pagination
             paginator = PageNumberPagination()
@@ -416,95 +428,73 @@ class ComplianceAuditViewSet(APIView):
             result_page = paginator.paginate_queryset(queryset, request)
             
             serializer = ComplianceAuditSerializer(result_page, many=True)
-            # logger.info(f"Retrieved {len(serializer.data)} audits")
             
             return paginator.get_paginated_response({
                 'success': True,
                 'audits': serializer.data
             })
             
-        except ValueError as ve:
-            logger.error(f"ValueError in audits list: {str(ve)}", exc_info=True)
-            return Response({
-                'success': False,
-                'error': 'Invalid parameter value',
-                'details': str(ve)
-            }, status=status.HTTP_400_BAD_REQUEST)
-            
         except Exception as e:
             logger.error(f"Error listing audits: {str(e)}", exc_info=True)
             return Response({
                 'success': False,
                 'error': 'Failed to retrieve audits',
-                'details': str(e),
-                'error_type': type(e).__name__
+                'details': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @debug_request_response
     def post(self, request):
         """Create a new audit"""
         try:
-            # logger.info(f"POST audit request by user: {request.user.full_name}")
+            user = request.user
             
-            if not (request.user.is_admin or request.user.role == 'compliance_officer'):
-                # logger.warning(f"User {request.user.full_name} attempted to create audit without permission")
+            # Check permissions - admin, security_analyst, or compliance_officer can create audits
+            if not (user.is_admin or user.role in ['security_analyst', 'compliance_officer']):
+                logger.warning(f"User {user.email} attempted to create audit without permission")
                 return Response({
                     'success': False,
-                    'error': 'Only admins and compliance officers can create audits'
+                    'error': 'You do not have permission to create audits. Only admin, security analysts, and compliance officers can create audits.'
                 }, status=status.HTTP_403_FORBIDDEN)
             
-            # logger.info(f"Creating audit with data: {request.data}")
+            print(f"\n📋 Creating audit by user: {user.email}")
+            print(f"📋 Request data: {json.dumps(request.data, indent=2)}")
+            
             serializer = ComplianceAuditSerializer(
                 data=request.data,
                 context={'request': request}
             )
             
             if serializer.is_valid():
-                # logger.info(f"Audit data is valid: {serializer.validated_data}")
+                print(f"✅ Audit data is valid")
                 
-                # Create audit first without incidents
-                audit_data = serializer.validated_data.copy()
+                # Extract incident_ids from validated data
+                incident_ids = serializer.validated_data.pop('incident_ids', [])
                 
-                # Temporarily remove incident_ids for audit creation
-                incident_ids = []
-                if 'incident_ids' in audit_data:
-                    incident_ids = audit_data.pop('incident_ids')
+                # Create audit
+                audit = serializer.save(created_by=user)
+                print(f"✅ Audit created: {audit.audit_id}")
                 
-                # Also remove related_incidents if it exists
-                if 'related_incidents' in audit_data:
-                    related_incidents = audit_data.pop('related_incidents')
-                
-                # Set created_by
-                request_data = request.data.copy()
-                audit_data['created_by'] = request.user
-                
-                # logger.info(f"Creating audit with cleaned data: {audit_data}")
-                
-                # Create the audit instance
-                audit = ComplianceAudit.objects.create(**audit_data)
-                # logger.info(f"Audit created with ID: {audit.id}, audit_id: {audit.audit_id}")
-                
-                # Add incidents after audit is created
+                # Add incidents if any
                 if incident_ids:
-                    # logger.info(f"Adding incidents to audit: {incident_ids}")
+                    from incidentApp.models import Incident
                     incidents = Incident.objects.filter(id__in=incident_ids)
                     if incidents.exists():
                         audit.related_incidents.set(incidents)
-                        logger.info(f"Added {incidents.count()} incidents to audit")
+                        print(f"✅ Added {incidents.count()} incidents to audit")
                         
                         # Calculate risk score
                         risk_score = audit.calculate_risk_score()
                         if risk_score:
                             audit.risk_score_from_incident = risk_score
                             audit.save(update_fields=['risk_score_from_incident'])
-                            logger.info(f"Set risk score: {risk_score}")
                 
                 # Update metrics
                 audit.update_metrics()
                 
+                # Log activity
                 try:
                     ActivityLogger.create_log(
-                        user=request.user,
+                        user=user,
                         log_type='compliance',
                         activity='audit_created',
                         description=f'Created compliance audit: {audit.audit_id}',
@@ -515,32 +505,172 @@ class ComplianceAuditViewSet(APIView):
                 except Exception as log_error:
                     logger.warning(f"Failed to create activity log: {str(log_error)}")
                 
-                # Return full audit data
-                full_audit_data = ComplianceAuditSerializer(audit, context={'request': request}).data
-                # logger.info(f"Audit created successfully: {audit.audit_id}")
-                
                 return Response({
                     'success': True,
                     'message': 'Audit created successfully',
-                    'audit': full_audit_data
+                    'audit': ComplianceAuditSerializer(audit, context={'request': request}).data
                 }, status=status.HTTP_201_CREATED)
             else:
-                logger.warning(f"Audit creation validation failed: {serializer.errors}")
+                print(f"❌ Validation errors: {serializer.errors}")
                 return Response({
                     'success': False,
                     'error': 'Validation failed',
                     'details': serializer.errors
                 }, status=status.HTTP_400_BAD_REQUEST)
-            
+                
         except Exception as e:
             logger.error(f"Error creating audit: {str(e)}", exc_info=True)
             return Response({
                 'success': False,
                 'error': 'Failed to create audit',
-                'details': str(e),
-                'error_type': type(e).__name__
+                'details': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+    
+    @debug_request_response
+    def put(self, request, audit_id=None):
+        """Update an audit (if audit_id provided in URL)"""
+        try:
+            # This method expects audit_id from URL pattern
+            # You might want to use a separate endpoint for updates
+            return Response({
+                'success': False,
+                'error': 'Please use PATCH method for updates'
+            }, status=status.HTTP_405_METHOD_NOT_ALLOWED)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @debug_request_response
+    def patch(self, request, audit_id=None):
+        """Partially update an audit"""
+        try:
+            if not audit_id:
+                return Response({
+                    'success': False,
+                    'error': 'Audit ID is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            user = request.user
+            
+            # Check permissions
+            if not (user.is_admin or user.role in ['security_analyst', 'compliance_officer']):
+                return Response({
+                    'success': False,
+                    'error': 'You do not have permission to update audits'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            try:
+                audit = ComplianceAudit.objects.get(id=audit_id)
+            except ComplianceAudit.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'error': f'Audit with ID {audit_id} not found'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            serializer = ComplianceAuditSerializer(
+                audit,
+                data=request.data,
+                context={'request': request},
+                partial=True
+            )
+            
+            if serializer.is_valid():
+                updated_audit = serializer.save()
+                
+                # Log activity
+                try:
+                    ActivityLogger.create_log(
+                        user=user,
+                        log_type='compliance',
+                        activity='audit_updated',
+                        description=f'Updated compliance audit: {audit.audit_id}',
+                        request=request,
+                        response=None,
+                        is_success=True
+                    )
+                except Exception as log_error:
+                    logger.warning(f"Failed to create activity log: {str(log_error)}")
+                
+                return Response({
+                    'success': True,
+                    'message': 'Audit updated successfully',
+                    'audit': ComplianceAuditSerializer(updated_audit, context={'request': request}).data
+                })
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Validation failed',
+                    'details': serializer.errors
+                }, status=status.HTTP_400_BAD_REQUEST)
+                
+        except Exception as e:
+            logger.error(f"Error updating audit: {str(e)}", exc_info=True)
+            return Response({
+                'success': False,
+                'error': 'Failed to update audit',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @debug_request_response
+    def delete(self, request, audit_id=None):
+        """Delete an audit"""
+        try:
+            if not audit_id:
+                return Response({
+                    'success': False,
+                    'error': 'Audit ID is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            user = request.user
+            
+            # Only admin can delete audits
+            if not (user.is_admin or user.role == 'admin'):
+                return Response({
+                    'success': False,
+                    'error': 'Only administrators can delete audits'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            try:
+                audit = ComplianceAudit.objects.get(id=audit_id)
+            except ComplianceAudit.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'error': f'Audit with ID {audit_id} not found'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            audit_id_str = audit.audit_id
+            audit.delete()
+            
+            # Log activity
+            try:
+                ActivityLogger.create_log(
+                    user=user,
+                    log_type='compliance',
+                    activity='audit_deleted',
+                    description=f'Deleted compliance audit: {audit_id_str}',
+                    request=request,
+                    response=None,
+                    is_success=True
+                )
+            except Exception as log_error:
+                logger.warning(f"Failed to create activity log: {str(log_error)}")
+            
+            return Response({
+                'success': True,
+                'message': 'Audit deleted successfully'
+            })
+            
+        except Exception as e:
+            logger.error(f"Error deleting audit: {str(e)}", exc_info=True)
+            return Response({
+                'success': False,
+                'error': 'Failed to delete audit',
+                'details': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)           
+            
+            
 
 @api_view(['GET', 'PUT', 'DELETE', 'PATCH'])
 @permission_classes([IsAuthenticated])
@@ -683,7 +813,23 @@ def audit_detail(request, audit_id):
             'error_type': type(e).__name__
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
+def get_audits_by_user_role(user):
+    """Get audits based on user role"""
+    if user.is_admin or user.role == 'security_analyst':
+        # Admin and security analysts see all audits
+        return ComplianceAudit.objects.all()
+    elif user.role == 'compliance_officer':
+        # Compliance officers see audits they created or are assigned to
+        return ComplianceAudit.objects.filter(
+            Q(created_by=user) | Q(lead_auditor=user)
+        ).distinct()
+    else:
+        # Other roles see only completed audits they're involved in
+        return ComplianceAudit.objects.filter(
+            Q(created_by=user) | Q(lead_auditor=user) | Q(status='completed')
+        ).distinct()
+        
+        
 # ==================== FINDING VIEWS ====================
 
 class AuditFindingViewSet(APIView):
@@ -700,7 +846,7 @@ class AuditFindingViewSet(APIView):
         try:
             user = self.request.user
             
-            if user.is_admin or user.role == 'compliance_officer':
+            if user.is_admin or user.role == 'compliance_officer' or user.role == 'security_analyst':
                 return AuditFinding.objects.select_related(
                     'audit', 'audit__standard', 'created_by', 'assigned_to'
                 ).all()
@@ -773,7 +919,7 @@ class AuditFindingViewSet(APIView):
         try:
             # logger.info(f"POST finding request by user: {request.user.full_name}")
             
-            if not (request.user.is_admin or request.user.role == 'compliance_officer'):
+            if not (request.user.is_admin or request.user.role == 'compliance_officer' or request.user.role == 'security_analyst'):
                 # logger.warning(f"User {request.user.full_name} attempted to create finding without permission")
                 return Response({
                     'success': False,
@@ -982,6 +1128,191 @@ class ControlAssessmentViewSet(APIView):
                 'details': str(e),
                 'error_type': type(e).__name__
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+   
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_incidents_for_audit(request):
+    """Get incidents based on user role for audit creation"""
+    try:
+        user = request.user
+        incidents = get_incidents_for_audit_creation(user)
+        
+        # Apply filters
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            incidents = incidents.filter(status=status_filter)
+        
+        severity_filter = request.query_params.get('severity')
+        if severity_filter:
+            incidents = incidents.filter(severity=severity_filter)
+        
+        search = request.query_params.get('search')
+        if search:
+            incidents = incidents.filter(
+                Q(title__icontains=search) |
+                Q(incident_number__icontains=search)
+            )
+        
+        incidents = incidents.order_by('-created_at')
+        
+        # Use the incident serializer
+        from incidentApp.serializers import IncidentListSerializer
+        serializer = IncidentListSerializer(incidents, many=True)
+        
+        return Response({
+            'success': True,
+            'incidents': serializer.data,
+            'count': incidents.count()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting incidents for audit: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'error': 'Failed to retrieve incidents',
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+                 
+
+@api_view(['PUT', 'DELETE', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def finding_detail(request, finding_id):
+    """Update or delete a finding with status restrictions"""
+    try:
+        finding = get_object_or_404(AuditFinding, id=finding_id)
+        user = request.user
+        
+        if request.method in ['PUT', 'PATCH']:
+            # Check if finding is editable
+            if not finding.is_editable:
+                return Response({
+                    'success': False,
+                    'error': f'Cannot edit finding with status "{finding.status}". Only created and in_progress findings can be edited.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check permissions
+            if not (user.is_admin or user.role in ['security_analyst', 'compliance_officer']):
+                return Response({
+                    'success': False,
+                    'error': 'You do not have permission to update this finding'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # If status changing to solved, set solved_by
+            if request.data.get('status') == 'solved' and finding.status != 'solved':
+                finding._solved_by = user
+            
+            serializer = AuditFindingSerializer(finding, data=request.data, partial=True)
+            if serializer.is_valid():
+                updated_finding = serializer.save()
+                return Response({
+                    'success': True,
+                    'message': 'Finding updated successfully',
+                    'finding': serializer.data
+                })
+            return Response({
+                'success': False,
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        elif request.method == 'DELETE':
+            # Only admin can delete findings, and only if not solved
+            if not user.is_admin:
+                return Response({
+                    'success': False,
+                    'error': 'Only administrators can delete findings'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            if not finding.is_editable:
+                return Response({
+                    'success': False,
+                    'error': f'Cannot delete finding with status "{finding.status}". Only created and in_progress findings can be deleted.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            finding.delete()
+            return Response({
+                'success': True,
+                'message': 'Finding deleted successfully'
+            })
+            
+    except Exception as e:
+        logger.error(f"Error in finding_detail: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'error': 'Failed to process request',
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+
+@api_view(['PUT', 'DELETE', 'PATCH'])
+@permission_classes([IsAuthenticated])
+def control_detail(request, control_id):
+    """Update or delete a control with status restrictions"""
+    try:
+        control = get_object_or_404(ControlAssessment, id=control_id)
+        user = request.user
+        
+        if request.method in ['PUT', 'PATCH']:
+            # Check if control is editable
+            if not control.is_editable:
+                return Response({
+                    'success': False,
+                    'error': f'Cannot edit control with remediation status "{control.remediation_status}". Only waiting and in_progress controls can be edited.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check permissions
+            if not (user.is_admin or user.role in ['security_analyst', 'compliance_officer']):
+                return Response({
+                    'success': False,
+                    'error': 'You do not have permission to update this control'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # If remediation status changing to completed, set completed_by
+            if request.data.get('remediation_status') == 'completed' and control.remediation_status != 'completed':
+                control._completed_by = user
+            
+            serializer = ControlAssessmentSerializer(control, data=request.data, partial=True)
+            if serializer.is_valid():
+                updated_control = serializer.save()
+                return Response({
+                    'success': True,
+                    'message': 'Control updated successfully',
+                    'control': serializer.data
+                })
+            return Response({
+                'success': False,
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        elif request.method == 'DELETE':
+            # Only admin can delete controls, and only if not completed
+            if not user.is_admin:
+                return Response({
+                    'success': False,
+                    'error': 'Only administrators can delete controls'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            if not control.is_editable:
+                return Response({
+                    'success': False,
+                    'error': f'Cannot delete control with remediation status "{control.remediation_status}". Only waiting and in_progress controls can be deleted.'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            control.delete()
+            return Response({
+                'success': True,
+                'message': 'Control deleted successfully'
+            })
+            
+    except Exception as e:
+        logger.error(f"Error in control_detail: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'error': 'Failed to process request',
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # ==================== DASHBOARD & UTILITY VIEWS ====================
@@ -2039,4 +2370,151 @@ def delete_report(request, report_id):
             'error': 'Failed to delete report',
             'details': str(e),
             'error_type': type(e).__name__
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+
+# Endpoint to delete completed incidents (admin only)
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def delete_completed_incident(request, incident_id):
+    """Delete a completed incident with all its findings and controls (admin only)"""
+    try:
+        user = request.user
+        
+        # Only admin can delete completed incidents
+        if not user.is_admin:
+            return Response({
+                'success': False,
+                'error': 'Only administrators can delete completed incidents'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        from incidentApp.models import Incident
+        incident = get_object_or_404(Incident, id=incident_id)
+        
+        # Check if incident is completed
+        if incident.status not in ['resolved', 'closed']:
+            return Response({
+                'success': False,
+                'error': 'Only completed incidents (resolved or closed) can be deleted'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Delete related findings and controls
+        related_audits = incident.compliance_audits.all()
+        for audit in related_audits:
+            audit.findings.all().delete()
+            audit.control_assessments.all().delete()
+        
+        # Delete the incident
+        incident.delete()
+        
+        return Response({
+            'success': True,
+            'message': 'Completed incident and related data deleted successfully'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error deleting completed incident: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'error': 'Failed to delete incident',
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        
+               
+        
+# Endpoint to check if audit can be marked as completed
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def check_audit_completion_readiness(request, audit_id):
+    """Check if an audit can be marked as completed based on findings and controls"""
+    try:
+        audit = get_object_or_404(ComplianceAudit, id=audit_id)
+        
+        findings = audit.findings.all()
+        controls = audit.control_assessments.all()
+        
+        # Check if all findings are solved
+        unsolved_findings = findings.exclude(status__in=['solved', 'closed']).count()
+        all_findings_solved = unsolved_findings == 0
+        
+        # Check if all required controls are completed
+        controls_requiring_remediation = controls.filter(remediation_required=True)
+        incomplete_controls = controls_requiring_remediation.exclude(remediation_status='completed').count()
+        all_controls_completed = incomplete_controls == 0
+        
+        can_complete = all_findings_solved and all_controls_completed
+        
+        return Response({
+            'success': True,
+            'can_complete': can_complete,
+            'readiness': {
+                'all_findings_solved': all_findings_solved,
+                'unsolved_findings_count': unsolved_findings,
+                'all_controls_completed': all_controls_completed,
+                'incomplete_controls_count': incomplete_controls,
+                'total_findings': findings.count(),
+                'total_controls': controls.count()
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error checking audit completion readiness: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'error': 'Failed to check audit readiness',
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        
+        
+        
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_reports_by_role(request):
+    """Get reports based on user role"""
+    try:
+        user = request.user
+        reports = get_reports_by_user_role(user)
+        
+        # Apply filters
+        report_type = request.query_params.get('report_type')
+        if report_type:
+            reports = reports.filter(report_type=report_type)
+        
+        format_filter = request.query_params.get('format')
+        if format_filter:
+            reports = reports.filter(format=format_filter)
+        
+        audit_id = request.query_params.get('audit_id')
+        if audit_id:
+            reports = reports.filter(audit_id=audit_id)
+        
+        search = request.query_params.get('search')
+        if search:
+            reports = reports.filter(
+                Q(title__icontains=search) |
+                Q(report_id__icontains=search)
+            )
+        
+        reports = reports.order_by('-generated_at')
+        
+        # Pagination
+        paginator = PageNumberPagination()
+        paginator.page_size = int(request.query_params.get('page_size', 10))
+        result_page = paginator.paginate_queryset(reports, request)
+        
+        serializer = ComplianceReportSerializer(result_page, many=True, context={'request': request})
+        
+        return paginator.get_paginated_response({
+            'success': True,
+            'reports': serializer.data
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting reports: {str(e)}", exc_info=True)
+        return Response({
+            'success': False,
+            'error': 'Failed to retrieve reports',
+            'details': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

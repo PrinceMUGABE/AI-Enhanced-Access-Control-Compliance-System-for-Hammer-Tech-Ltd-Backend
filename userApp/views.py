@@ -2714,10 +2714,12 @@ def get_access_control_stats(request):
 @display_response_data
 def get_users_for_access_control(request):
     """Get users with additional access control information"""
+    print(f"\n User {request.user.email} with role: {request.user.role} is fetching access control endpoint\n")
     try:
         user = request.user
         
         if not user.is_admin and not user.is_hr:
+            print(f"Unauthorized access attempt by user: {user.work_mail_address} to access control data")
             return Response({"error": "You are not authorized to view user access data."}, status=403)
         
         # Get all users with additional info

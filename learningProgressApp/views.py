@@ -165,29 +165,16 @@ def save_module_completion(request):
         is_completed = request.data.get('is_completed', True)
         print(f"Processing module_id: {module_id}, is_completed: {is_completed}")
         
-        # Try to get learner using different approaches
-        learner = None
-        candidate = None
-        
+        # Get learner
         try:
-            # First approach: learner created by the user
             learner = CustomUser.objects.get(id=request.user.id)
-            print(f"Found learner (created_by): {learner}")
+            print(f"Found learner: {learner}")
         except CustomUser.DoesNotExist:
-            try:
-                # Second approach: learner associated with user directly
-                learner = CustomUser.objects.get(id=request.user.id)
-                print(f"Found learner (user field): {learner}")
-            except CustomUser.DoesNotExist:
-                error_msg = f"No learner found for user {request.user}. User ID: {request.user.id}"
-                print(f"ERROR: {error_msg}")
-                return Response({'error': error_msg}, status=status.HTTP_404_NOT_FOUND)
-        except Exception as e:
-            error_msg = f"Unexpected error finding learner: {str(e)}"
+            error_msg = f"No learner found for user {request.user}. User ID: {request.user.id}"
             print(f"ERROR: {error_msg}")
-            return Response({'error': error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': error_msg}, status=status.HTTP_404_NOT_FOUND)
         
-        # Try to get module first to determine which training we're dealing with
+        # Get module
         try:
             module = Module.objects.get(id=module_id)
             print(f"Found module: {module}")
@@ -195,19 +182,11 @@ def save_module_completion(request):
             error_msg = f"Module with ID {module_id} not found"
             print(f"ERROR: {error_msg}")
             return Response({'error': error_msg}, status=status.HTTP_404_NOT_FOUND)
-        except ValueError:
-            error_msg = f"Invalid module ID format: {module_id}"
-            print(f"ERROR: {error_msg}")
-            return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            error_msg = f"Unexpected error finding module: {str(e)}"
-            print(f"ERROR: {error_msg}")
-            return Response({'error': error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
         training = module.training
         print(f"Module belongs to training: {training}")
         
-        # Get the specific candidate for this training
+        # Get candidate
         try:
             candidate = Candidate.objects.get(learner=learner, training=training)
             print(f"Found candidate for training: {candidate}")
@@ -215,15 +194,6 @@ def save_module_completion(request):
             error_msg = f"Candidate not found for learner {learner} and training {training}"
             print(f"ERROR: {error_msg}")
             return Response({'error': error_msg}, status=status.HTTP_404_NOT_FOUND)
-        except Candidate.MultipleObjectsReturned:
-            # This shouldn't happen with learner+training combination, but handle it
-            error_msg = f"Multiple candidates found for learner {learner} and training {training}. Data integrity issue."
-            print(f"ERROR: {error_msg}")
-            return Response({'error': error_msg}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            error_msg = f"Unexpected error finding candidate: {str(e)}"
-            print(f"ERROR: {error_msg}")
-            return Response({'error': error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
         # Get or create learning progress
         try:
@@ -281,6 +251,8 @@ def save_module_completion(request):
         except Exception as e:
             error_msg = f"Database error during module completion update: {str(e)}"
             print(f"ERROR: {error_msg}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
             return Response({'error': error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
     except Exception as e:
@@ -291,6 +263,7 @@ def save_module_completion(request):
         return Response({'error': error_msg}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     finally:
         print(f"=== SAVE MODULE COMPLETION END ===")
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_achievements(request):

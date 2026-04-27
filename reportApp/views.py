@@ -38,7 +38,7 @@ from incidentApp.models import Incident
 from complianceAuditApp.models import ComplianceAudit, ControlAssessment
 from trainingApp.models import Training
 from trainingCandidateApp.models import Candidate
-from learningProgressApp.models import LearningProgress
+from learningProgressApp.models import LearningProgress, ModuleCompletion
 from complianceAuditApp.models import ComplianceStandard
 from .serializers import ReportFilterSerializer
 
@@ -82,41 +82,57 @@ class BaseDashboardService:
         return start_date, end_date
     
     def get_department_filter_for_users(self, department_id=None):
-        """Get department filter for users based on user role"""
+        """Get department filter for users based on user role with debugging"""
+        logger.info(f"get_department_filter_for_users - department_id: {department_id}, user_role: {self.user.role}")
+        
         if department_id == '' or department_id is None:
             department_id = None
         
         # For users who can see all data
         if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
             if department_id:
-                # Filter by specific department
-                return Q(department__id=department_id) | Q(departments__id=department_id)
-            # No department filter - show all
+                filter_q = Q(department__id=department_id) | Q(departments__id=department_id)
+                logger.info(f"  Admin/HR/Compliance with specific department: {department_id}")
+                return filter_q
+            logger.info(f"  Admin/HR/Compliance - No department filter (all data)")
             return Q()
         
         # For security analysts - only their assigned departments
         elif self.user.role == 'security_analyst':
             dept_ids = list(self.user.departments.values_list('id', flat=True))
+            logger.info(f"  Security analyst - Assigned departments: {dept_ids}")
+            
             if not dept_ids:
+                logger.warning(f"  Security analyst has no departments assigned!")
                 return Q(id__in=[])
             
             if department_id and department_id in dept_ids:
-                return Q(department__id=department_id) | Q(departments__id=department_id)
+                filter_q = Q(department__id=department_id) | Q(departments__id=department_id)
+                logger.info(f"  Filtering to specific department: {department_id}")
+                return filter_q
             
-            return Q(department__id__in=dept_ids) | Q(departments__id__in=dept_ids)
+            filter_q = Q(department__id__in=dept_ids) | Q(departments__id__in=dept_ids)
+            logger.info(f"  Filtering to all assigned departments: {dept_ids}")
+            return filter_q
         
         # For employees - only their own department
         elif self.user.role == 'employee':
             if self.user.department:
                 if department_id and department_id == str(self.user.department.id):
-                    return Q(department__id=self.user.department.id)
-                return Q(department__id=self.user.department.id)
+                    filter_q = Q(department__id=self.user.department.id)
+                    logger.info(f"  Employee - Own department: {self.user.department.id}")
+                    return filter_q
+                filter_q = Q(department__id=self.user.department.id)
+                logger.info(f"  Employee - Own department (default): {self.user.department.id}")
+                return filter_q
             else:
+                logger.warning(f"  Employee has no department assigned!")
                 return Q(id__in=[])
         
-        # Default for other roles
+        logger.warning(f"  No filter for role: {self.user.role}")
         return Q()
-    
+
+
     def get_department_filter_for_incidents(self, department_id=None):
         """Get department filter for incidents based on user role"""
         if department_id == '' or department_id is None:
@@ -163,26 +179,67 @@ class BaseDashboardService:
         return qs.distinct()
     
     def get_incident_queryset(self, start_date, end_date, department_id=None, incident_status=None, severity=None):
-        """Get filtered incident queryset"""
-        dept_filter = self.get_department_filter_for_incidents(department_id)
-        
-        # Start with base queryset filtered by date
-        qs = Incident.objects.filter(
-            created_at__gte=start_date,
-            created_at__lte=end_date
-        )
-        
-        # Apply department filter
-        if dept_filter:
-            qs = qs.filter(dept_filter)
-        
-        # Apply additional filters (using incident_status instead of status)
-        if incident_status:
-            qs = qs.filter(status=incident_status)
-        if severity:
-            qs = qs.filter(severity=severity)
-        
-        return qs.distinct()
+        """Get filtered incident queryset with debugging"""
+        try:
+            logger.info(f"get_incident_queryset - Start Date: {start_date}, End Date: {end_date}")
+            
+            dept_filter = self.get_department_filter_for_incidents(department_id)
+            logger.info(f"Department filter: {dept_filter}")
+            
+            # Start with base queryset filtered by date
+            qs = Incident.objects.filter(
+                created_at__gte=start_date,
+                created_at__lte=end_date
+            )
+            
+            logger.info(f"After date filter: {qs.count()} incidents")
+            
+            # Log date range coverage
+            if qs.exists():
+                min_date = qs.earliest('created_at').created_at
+                max_date = qs.latest('created_at').created_at
+                logger.info(f"Date range coverage: {min_date} to {max_date}")
+            else:
+                # Check if there are any incidents outside the date range
+                all_incidents = Incident.objects.count()
+                if all_incidents > 0:
+                    oldest = Incident.objects.earliest('created_at').created_at
+                    newest = Incident.objects.latest('created_at').created_at
+                    logger.warning(f"No incidents in date range {start_date} to {end_date}")
+                    logger.info(f"But there are {all_incidents} incidents total, ranging from {oldest} to {newest}")
+            
+            # Apply department filter
+            if dept_filter:
+                before_count = qs.count()
+                qs = qs.filter(dept_filter)
+                after_count = qs.count()
+                logger.info(f"After department filter: {after_count} incidents (was {before_count})")
+            
+            # Apply additional filters
+            if incident_status:
+                before_count = qs.count()
+                qs = qs.filter(status=incident_status)
+                after_count = qs.count()
+                logger.info(f"After status filter ({incident_status}): {after_count} incidents (was {before_count})")
+            
+            if severity:
+                before_count = qs.count()
+                qs = qs.filter(severity=severity)
+                after_count = qs.count()
+                logger.info(f"After severity filter ({severity}): {after_count} incidents (was {before_count})")
+            
+            result = qs.distinct()
+            logger.info(f"Final incident queryset count: {result.count()}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in get_incident_queryset: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return Incident.objects.none()
+    
+    
     
     def get_audit_queryset(self, start_date, end_date, department_id=None):
         """Get filtered audit queryset"""
@@ -204,22 +261,42 @@ class BaseDashboardService:
         return qs.distinct()
     
     def get_accessible_department_ids(self, department_id=None):
-        """Get list of department IDs that the user can access"""
-        if department_id and department_id != '':
-            # Check if user can access this specific department
-            if self.can_access_department(department_id):
-                return [department_id]
+        """Get list of department IDs that the user can access with debugging"""
+        try:
+            logger.info(f"get_accessible_department_ids called - department_id: {department_id}")
+            logger.info(f"User role: {self.user.role}")
+            
+            if department_id and department_id != '':
+                # Check if user can access this specific department
+                can_access = self.can_access_department(department_id)
+                logger.info(f"  Specific department {department_id} access: {can_access}")
+                if can_access:
+                    return [department_id]
+                return []
+            
+            # Get all accessible departments
+            if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
+                dept_ids = list(Department.objects.filter(status='active').values_list('id', flat=True))
+                logger.info(f"  Role {self.user.role} - All active departments: {dept_ids}")
+                return dept_ids
+                
+            elif self.user.role == 'security_analyst':
+                dept_ids = list(self.user.departments.filter(status='active').values_list('id', flat=True))
+                logger.info(f"  Security analyst - Assigned departments: {dept_ids}")
+                return dept_ids
+                
+            elif self.user.role == 'employee' and self.user.department:
+                dept_ids = [self.user.department.id]
+                logger.info(f"  Employee - Own department: {dept_ids}")
+                return dept_ids
+            
+            logger.warning(f"  No accessible departments for role: {self.user.role}")
             return []
-        
-        # Get all accessible departments
-        if self.user.role in ['admin', 'hr_manager', 'compliance_officer']:
-            return list(Department.objects.filter(status='active').values_list('id', flat=True))
-        elif self.user.role == 'security_analyst':
-            return list(self.user.departments.filter(status='active').values_list('id', flat=True))
-        elif self.user.role == 'employee' and self.user.department:
-            return [self.user.department.id]
-        
-        return []
+            
+        except Exception as e:
+            logger.error(f"Error in get_accessible_department_ids: {str(e)}")
+            return []
+    
     
     def can_access_department(self, department_id):
         """Check if user can access a specific department"""
@@ -407,179 +484,430 @@ class DashboardDataService(BaseDashboardService):
         
         return breakdown
     
-    def get_access_trends(self, start_date, end_date, department_id=None, days=7):
-        """Get real access trends from user logs"""
-        user_qs = self.get_user_queryset(department_id)
-        user_ids = user_qs.values_list('id', flat=True)
-        
-        # Get authentication logs
-        auth_logs = UserLog.objects.filter(
-            timestamp__gte=start_date,
-            timestamp__lte=end_date,
-            user__in=user_ids,
-            log_type='authentication'
-        )
-        
-        # Generate daily trends
-        trends_data = []
-        current_date = end_date - timedelta(days=days-1)
-        
-        while current_date <= end_date:
-            date_start = timezone.make_aware(datetime.combine(current_date.date(), datetime.min.time()))
-            date_end = timezone.make_aware(datetime.combine(current_date.date(), datetime.max.time()))
-            
-            date_logs = auth_logs.filter(
-                timestamp__gte=date_start,
-                timestamp__lte=date_end
-            )
-            
-            successful_logins = date_logs.filter(
-                activity='login_otp_verify',
-                is_success=True
-            ).count()
-            
-            failed_logins = date_logs.filter(
-                activity__in=['login', 'login_otp_request'],
-                is_success=False
-            ).count()
-            
-            flagged_activities = date_logs.filter(is_success=False).count()
-            
-            trends_data.append({
-                'date': current_date.date(),
-                'successful_logins': successful_logins,
-                'failed_logins': failed_logins,
-                'flagged_activities': flagged_activities
-            })
-            
-            current_date += timedelta(days=1)
-        
-        return trends_data
-    
-    def get_incident_trends(self, start_date, end_date, department_id=None):
-        """Get real incident trends"""
-        incident_qs = self.get_incident_queryset(start_date, end_date, department_id)
-        
-        # Generate daily trends
-        trends_data = []
-        days_count = min(15, (end_date - start_date).days + 1)
-        
-        for i in range(days_count):
-            date_start = start_date + timedelta(days=i)
-            date_end = date_start + timedelta(days=1)
-            
-            date_incidents = incident_qs.filter(
-                created_at__gte=date_start,
-                created_at__lt=date_end
-            )
-            
-            total = date_incidents.count()
-            resolved = date_incidents.filter(status__in=['resolved', 'closed']).count()
-            
-            # Calculate average resolution time
-            resolved_incidents = date_incidents.filter(
-                status__in=['resolved', 'closed'],
-                resolved_at__isnull=False
-            )
-            
-            avg_time = 0
-            if resolved_incidents.exists():
-                total_hours = 0
-                for incident in resolved_incidents:
-                    if incident.resolved_at and incident.created_at:
-                        hours = (incident.resolved_at - incident.created_at).total_seconds() / 3600
-                        total_hours += hours
-                avg_time = total_hours / resolved_incidents.count()
-            
-            trends_data.append({
-                'date': date_start.date(),
-                'total_incidents': total,
-                'resolved_incidents': resolved,
-                'average_resolution_time': round(avg_time, 2)
-            })
-        
-        return trends_data
-    
-    def get_department_performance(self, start_date, end_date):
-        """Get real department performance metrics"""
-        accessible_dept_ids = self.get_accessible_department_ids()
-        departments = Department.objects.filter(id__in=accessible_dept_ids, status='active')
-        
-        performance_data = []
-        
-        for dept in departments:
-            # Department users
-            dept_users = CustomUser.objects.filter(
-                Q(department=dept) | Q(departments=dept),
-                is_active=True
-            ).distinct()
-            
-            # Department incidents
-            dept_incidents = Incident.objects.filter(
-                department=dept,
-                created_at__gte=start_date,
-                created_at__lte=end_date
-            )
-            
-            # Department compliance score
-            dept_audits = ComplianceAudit.objects.filter(
-                departments=dept,
-                status='completed'
-            )
-            
-            dept_compliance = 100.0
-            if dept_audits.exists():
-                dept_compliance = dept_audits.aggregate(
-                    avg_score=Avg('overall_score')
-                )['avg_score'] or 100.0
-            
-            # Training completion rate - FIXED
-            user_ids = dept_users.values_list('id', flat=True)
-            dept_candidates = Candidate.objects.filter(learner__in=user_ids)
-            total_candidates = dept_candidates.count()
-            
-            completion_rate = 0
-            if total_candidates > 0:
-                completed_candidates = dept_candidates.filter(status='completed').count()
-                completion_rate = (completed_candidates / total_candidates) * 100
-            
-            # Risk level based on incidents
-            critical_incidents = dept_incidents.filter(severity='critical').count()
-            high_incidents = dept_incidents.filter(severity='high').count()
-            overdue_incidents = sum(1 for inc in dept_incidents if inc.is_overdue)
-            
-            if critical_incidents > 0 or overdue_incidents > 3:
-                risk_level = 'critical'
-            elif high_incidents > 2 or overdue_incidents > 1:
-                risk_level = 'high'
-            elif high_incidents > 0 or dept_incidents.count() > 5:
-                risk_level = 'medium'
-            else:
-                risk_level = 'low'
-            
-            performance_data.append({
-                'department_id': dept.id,
-                'department_name': dept.name,
-                'total_users': dept_users.count(),
-                'active_incidents': dept_incidents.exclude(status__in=['resolved', 'closed']).count(),
-                'compliance_score': round(dept_compliance, 2),
-                'training_completion_rate': round(completion_rate, 2),
-                'risk_level': risk_level
-            })
-        
-        return performance_data
-    
-    def get_recent_activities(self, start_date, end_date, department_id=None, limit=10):
-        """Get real recent activities from user logs - SIMPLIFIED"""
+    def get_access_trends(self, start_date, end_date, department_id=None, days=7, current_user=None):
+        """Get real access trends from user logs with role-based filtering and detailed logging"""
         try:
             user_qs = self.get_user_queryset(department_id)
             user_ids = user_qs.values_list('id', flat=True)
             
-            recent_logs = UserLog.objects.filter(
+            # Determine if the current user should only see their own logs
+            only_self_logs = False
+            if current_user and current_user.role in ['employee', 'compliance_officer']:
+                only_self_logs = True
+            
+            # Build the query for authentication logs
+            auth_logs = UserLog.objects.filter(
+                timestamp__gte=start_date,
+                timestamp__lte=end_date,
+                user__in=user_ids,
+                log_type='authentication'
+            )
+            
+            # Apply role-based filtering
+            if only_self_logs and current_user:
+                auth_logs = auth_logs.filter(user=current_user)
+            
+            # Debug: Log the query counts
+            logger.info(f"Total auth logs found: {auth_logs.count()}")
+            logger.info(f"Login activities breakdown:")
+            for activity in ['login', 'login_otp_verify', 'login_otp_request']:
+                success_count = auth_logs.filter(activity=activity, is_success=True).count()
+                fail_count = auth_logs.filter(activity=activity, is_success=False).count()
+                logger.info(f"  {activity}: Success={success_count}, Failed={fail_count}")
+            
+            # Generate daily trends
+            trends_data = []
+            current_date = end_date - timedelta(days=days-1)
+            
+            while current_date <= end_date:
+                date_start = timezone.make_aware(datetime.combine(current_date.date(), datetime.min.time()))
+                date_end = timezone.make_aware(datetime.combine(current_date.date(), datetime.max.time()))
+                
+                date_logs = auth_logs.filter(
+                    timestamp__gte=date_start,
+                    timestamp__lte=date_end
+                )
+                
+                # Detailed breakdown for each activity type
+                login_verify_success = date_logs.filter(
+                    activity='login_otp_verify',
+                    is_success=True
+                ).count()
+                
+                login_success = date_logs.filter(
+                    activity='login',
+                    is_success=True
+                ).count()
+                
+                successful_logins = login_verify_success + login_success
+                
+                # Failed logins breakdown
+                login_verify_failed = date_logs.filter(
+                    activity='login_otp_verify',
+                    is_success=False
+                ).count()
+                
+                login_failed = date_logs.filter(
+                    activity='login',
+                    is_success=False
+                ).count()
+                
+                otp_request_failed = date_logs.filter(
+                    activity='login_otp_request',
+                    is_success=False
+                ).count()
+                
+                failed_logins = login_verify_failed + login_failed + otp_request_failed
+                
+                # Flagged activities (all unsuccessful)
+                flagged_activities = date_logs.filter(is_success=False).count()
+                
+                # Optional: Add successful OTP requests
+                successful_otp_requests = date_logs.filter(
+                    activity='login_otp_request',
+                    is_success=True
+                ).count()
+                
+                trends_data.append({
+                    'date': current_date.date(),
+                    'successful_logins': successful_logins,
+                    'failed_logins': failed_logins,
+                    'flagged_activities': flagged_activities,
+                    # Detailed breakdown for debugging
+                    'breakdown': {
+                        'login_verify_success': login_verify_success,
+                        'login_success': login_success,
+                        'login_verify_failed': login_verify_failed,
+                        'login_failed': login_failed,
+                        'otp_request_failed': otp_request_failed,
+                        'successful_otp_requests': successful_otp_requests
+                    }
+                })
+                
+                current_date += timedelta(days=1)
+            
+            return trends_data
+        except Exception as e:
+            logger.error(f"Error getting access trends: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
+    
+    def get_incident_trends(self, start_date, end_date, department_id=None, current_user=None, include_all_departments=False):
+        """Get real incident trends with comprehensive role-based filtering and debugging"""
+        try:
+            # DEBUG: Log initial parameters
+            logger.info("=" * 80)
+            logger.info("INCIDENT TRENDS DEBUG - START")
+            logger.info(f"Start Date: {start_date}")
+            logger.info(f"End Date: {end_date}")
+            logger.info(f"Department ID: {department_id}")
+            logger.info(f"Current User: {current_user.email if current_user else 'None'}")
+            logger.info(f"Current User Role: {current_user.role if current_user else 'None'}")
+            logger.info(f"Include All Departments: {include_all_departments}")
+            
+            # Get base incident queryset
+            incident_qs = self.get_incident_queryset(start_date, end_date, department_id)
+            
+            # DEBUG: Log base queryset count
+            base_count = incident_qs.count()
+            logger.info(f"Base incident queryset count (after date/department filter): {base_count}")
+            
+            # Log a few sample incidents from base queryset
+            if base_count > 0:
+                sample_incidents = incident_qs[:3]
+                min_date = incident_qs.earliest('created_at').created_at.date()
+                max_date = incident_qs.latest('created_at').created_at.date()
+                logger.info(f"Incident date range in data: {min_date} to {max_date}")
+                for idx, inc in enumerate(sample_incidents):
+                    logger.info(f"Sample Incident {idx + 1}: ID={inc.id}, Number={inc.incident_number}, Created={inc.created_at.date()}")
+            
+            # Role-based filtering logic
+            if current_user:
+                logger.info(f"Applying role-based filtering for role: {current_user.role}")
+                
+                if current_user.role in ['employee', 'compliance_officer']:
+                    before_count = incident_qs.count()
+                    incident_qs = incident_qs.filter(
+                        models.Q(created_by=current_user) | 
+                        models.Q(assigned_to=current_user)
+                    )
+                    after_count = incident_qs.count()
+                    logger.info(f"Employee/Compliance Officer filter: Before={before_count}, After={after_count}")
+            
+            # Final count after all filters
+            final_count = incident_qs.count()
+            logger.info(f"Final incident queryset count after all filters: {final_count}")
+            
+            # FIX: Calculate actual date range based on available data
+            if final_count > 0:
+                # Get the actual min and max dates from incidents
+                actual_min_date = incident_qs.earliest('created_at').created_at.date()
+                actual_max_date = incident_qs.latest('created_at').created_at.date()
+                
+                # Add padding before and after
+                start_date_for_trends = actual_min_date - timedelta(days=2)
+                end_date_for_trends = actual_max_date + timedelta(days=2)
+                
+                # Calculate days between
+                days_between = (end_date_for_trends - start_date_for_trends).days
+                days_count = min(15, max(7, days_between + 1))  # Between 7 and 15 days
+                
+                logger.info(f"Using dynamic date range based on incident data:")
+                logger.info(f"  Actual min date: {actual_min_date}")
+                logger.info(f"  Actual max date: {actual_max_date}")
+                logger.info(f"  Trends start date: {start_date_for_trends}")
+                logger.info(f"  Trends end date: {end_date_for_trends}")
+                logger.info(f"  Days count: {days_count}")
+            else:
+                # Fallback to original date range if no incidents
+                days_count = min(15, (end_date - start_date).days + 1)
+                start_date_for_trends = start_date.date()
+                end_date_for_trends = end_date.date()
+                logger.warning(f"No incidents found, using fallback date range: {start_date_for_trends} to {end_date_for_trends}")
+            
+            # Generate daily trends
+            trends_data = []
+            current_date = start_date_for_trends
+            
+            while current_date <= end_date_for_trends:
+                # Create datetime range for the day (with timezone)
+                date_start = timezone.make_aware(datetime.combine(current_date, datetime.min.time()))
+                date_end = timezone.make_aware(datetime.combine(current_date, datetime.max.time()))
+                
+                date_incidents = incident_qs.filter(
+                    created_at__gte=date_start,
+                    created_at__lte=date_end
+                )
+                
+                total = date_incidents.count()
+                
+                # Log daily counts (only if > 0 to reduce noise)
+                if total > 0:
+                    logger.info(f"  Date {current_date}: {total} incidents found")
+                    for inc in date_incidents:
+                        logger.info(f"    - {inc.incident_number}: {inc.title[:50]} (Severity: {inc.severity})")
+                
+                # Status breakdown
+                resolved_statuses = ['resolved', 'closed', 'completed', 'fixed', 'mitigated']
+                in_progress_statuses = ['in_progress', 'investigating', 'analyzing', 'reviewing']
+                pending_statuses = ['pending', 'open', 'new', 'reported', 'awaiting_response']
+                
+                resolved = date_incidents.filter(status__in=resolved_statuses).count()
+                in_progress = date_incidents.filter(status__in=in_progress_statuses).count()
+                pending = date_incidents.filter(status__in=pending_statuses).count()
+                
+                # Calculate average resolution time
+                resolved_incidents = date_incidents.filter(
+                    status__in=resolved_statuses,
+                    resolved_at__isnull=False
+                )
+                
+                avg_time = 0
+                if resolved_incidents.exists():
+                    from django.db.models import Avg, F, ExpressionWrapper, fields
+                    
+                    time_diff = ExpressionWrapper(
+                        F('resolved_at') - F('created_at'),
+                        output_field=fields.DurationField()
+                    )
+                    
+                    avg_duration = resolved_incidents.annotate(
+                        resolution_time=time_diff
+                    ).aggregate(
+                        avg_resolution=Avg('resolution_time')
+                    )['avg_resolution']
+                    
+                    if avg_duration:
+                        avg_time = avg_duration.total_seconds() / 3600  # Hours
+                
+                trends_data.append({
+                    'date': current_date,
+                    'total_incidents': total,
+                    'resolved_incidents': resolved,
+                    'in_progress_incidents': in_progress,
+                    'pending_incidents': pending,
+                    'average_resolution_time': round(avg_time, 2),
+                    'resolution_rate': round((resolved / total * 100), 2) if total > 0 else 0,
+                    'severity_breakdown': {
+                        'high': date_incidents.filter(severity__in=['high', 'critical']).count(),
+                        'medium': date_incidents.filter(severity='medium').count(),
+                        'low': date_incidents.filter(severity='low').count()
+                    }
+                })
+                
+                current_date += timedelta(days=1)
+            
+            # Calculate non-zero entries for logging
+            non_zero_entries = [d for d in trends_data if d['total_incidents'] > 0]
+            logger.info(f"Generated {len(trends_data)} trend entries, {len(non_zero_entries)} have incidents")
+            
+            if non_zero_entries:
+                logger.info(f"Dates with incidents: {[d['date'] for d in non_zero_entries]}")
+            
+            logger.info("INCIDENT TRENDS DEBUG - END")
+            logger.info("=" * 80)
+            
+            return trends_data
+            
+        except Exception as e:
+            logger.error(f"Error getting incident trends: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
+    def get_department_performance(self, start_date, end_date):
+        """Get real department performance metrics with debugging"""
+        try:
+            logger.info("=" * 80)
+            logger.info("DEPARTMENT PERFORMANCE DEBUG - START")
+            logger.info(f"Date Range: {start_date} to {end_date}")
+            
+            accessible_dept_ids = self.get_accessible_department_ids()
+            logger.info(f"Accessible department IDs: {accessible_dept_ids}")
+            
+            departments = Department.objects.filter(id__in=accessible_dept_ids, status='active')
+            logger.info(f"Found {departments.count()} active departments")
+            
+            # Log all departments for debugging
+            for dept in departments:
+                logger.info(f"  Department: ID={dept.id}, Name={dept.name}, Status={dept.status}")
+            
+            performance_data = []
+            
+            for dept in departments:
+                logger.info(f"\n--- Processing Department: {dept.name} (ID: {dept.id}) ---")
+                
+                # Department users
+                dept_users = CustomUser.objects.filter(
+                    Q(department=dept) | Q(departments=dept),
+                    is_active=True
+                ).distinct()
+                
+                user_count = dept_users.count()
+                logger.info(f"  Total users: {user_count}")
+                
+                # Log user details for debugging
+                if user_count > 0:
+                    user_emails = list(dept_users.values_list('email', flat=True)[:5])
+                    logger.info(f"  Sample users: {user_emails}")
+                
+                # Department incidents
+                dept_incidents = Incident.objects.filter(
+                    department=dept,
+                    created_at__gte=start_date,
+                    created_at__lte=end_date
+                )
+                
+                total_incidents = dept_incidents.count()
+                active_incidents = dept_incidents.exclude(status__in=['resolved', 'closed']).count()
+                logger.info(f"  Total incidents in date range: {total_incidents}")
+                logger.info(f"  Active incidents: {active_incidents}")
+                
+                # Log incident details
+                if total_incidents > 0:
+                    for inc in dept_incidents[:3]:
+                        logger.info(f"    Incident: {inc.incident_number}, Status={inc.status}, Severity={inc.severity}, Created={inc.created_at.date()}")
+                
+                # Department compliance score
+                dept_audits = ComplianceAudit.objects.filter(
+                    departments=dept,
+                    status='completed'
+                )
+                
+                dept_compliance = 100.0
+                if dept_audits.exists():
+                    audit_count = dept_audits.count()
+                    avg_score = dept_audits.aggregate(avg_score=Avg('overall_score'))['avg_score']
+                    if avg_score:
+                        dept_compliance = avg_score
+                    logger.info(f"  Audits found: {audit_count}, Average compliance score: {dept_compliance:.2f}%")
+                else:
+                    logger.info(f"  No completed audits found for this department, using default 100%")
+                
+                # Training completion rate
+                user_ids = dept_users.values_list('id', flat=True)
+                dept_candidates = Candidate.objects.filter(learner__in=user_ids)
+                total_candidates = dept_candidates.count()
+                
+                completion_rate = 0
+                if total_candidates > 0:
+                    completed_candidates = dept_candidates.filter(status='completed').count()
+                    completion_rate = (completed_candidates / total_candidates) * 100
+                    logger.info(f"  Training stats: Total candidates={total_candidates}, Completed={completed_candidates}, Rate={completion_rate:.2f}%")
+                else:
+                    logger.info(f"  No training candidates found for this department")
+                
+                # Risk level based on incidents
+                critical_incidents = dept_incidents.filter(severity='critical').count()
+                high_incidents = dept_incidents.filter(severity='high').count()
+                overdue_incidents = sum(1 for inc in dept_incidents if inc.is_overdue)
+                
+                if critical_incidents > 0 or overdue_incidents > 3:
+                    risk_level = 'critical'
+                elif high_incidents > 2 or overdue_incidents > 1:
+                    risk_level = 'high'
+                elif high_incidents > 0 or dept_incidents.count() > 5:
+                    risk_level = 'medium'
+                else:
+                    risk_level = 'low'
+                
+                logger.info(f"  Risk assessment: Critical={critical_incidents}, High={high_incidents}, Overdue={overdue_incidents}, Risk Level={risk_level}")
+                
+                performance_entry = {
+                    'department_id': dept.id,
+                    'department_name': dept.name,
+                    'total_users': user_count,
+                    'active_incidents': active_incidents,
+                    'compliance_score': round(dept_compliance, 2),
+                    'training_completion_rate': round(completion_rate, 2),
+                    'risk_level': risk_level
+                }
+                
+                logger.info(f"  Final performance entry: {performance_entry}")
+                performance_data.append(performance_entry)
+            
+            logger.info(f"\nTotal departments processed: {len(performance_data)}")
+            logger.info("DEPARTMENT PERFORMANCE DEBUG - END")
+            logger.info("=" * 80)
+            
+            return performance_data
+            
+        except Exception as e:
+            logger.error(f"Error getting department performance: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
+    
+    def get_recent_activities(self, start_date, end_date, department_id=None, limit=10, current_user=None):
+        """Get real recent activities from user logs - with role-based filtering"""
+        try:
+            user_qs = self.get_user_queryset(department_id)
+            user_ids = user_qs.values_list('id', flat=True)
+            
+            # Determine if the current user should only see their own logs
+            only_self_logs = False
+            if current_user and current_user.role in ['employee', 'compliance_officer']:
+                only_self_logs = True
+            
+            # Build the query
+            recent_logs_query = UserLog.objects.filter(
                 timestamp__gte=start_date,
                 timestamp__lte=end_date,
                 user__in=user_ids
-            ).order_by('-timestamp')[:limit]
+            )
+            
+            # Apply role-based filtering
+            if only_self_logs and current_user:
+                recent_logs_query = recent_logs_query.filter(user=current_user)
+                logger.info(f"User {current_user.email} (role: {current_user.role}) viewing only their own logs")
+            elif current_user:
+                logger.info(f"User {current_user.email} (role: {current_user.role}) viewing all user logs")
+            
+            # Get the limited results
+            recent_logs = recent_logs_query.order_by('-timestamp')[:limit]
             
             recent_activities = []
             
@@ -609,9 +937,14 @@ class DashboardDataService(BaseDashboardService):
             logger.error(f"Error getting recent activities: {str(e)}")
             return []
     
-    def get_system_health(self, start_date, end_date):
-        """Get real system health metrics from database - SIMPLIFIED"""
+    def get_system_health(self, start_date, end_date, current_user=None):
+        """Get real system health metrics from database with role-based filtering"""
         try:
+            # Determine if user should see limited system health data
+            limited_access = False
+            if current_user and current_user.role in ['employee', 'compliance_officer']:
+                limited_access = True
+            
             # 1. Authentication System Health
             auth_logs = UserLog.objects.filter(
                 timestamp__gte=start_date,
@@ -619,167 +952,687 @@ class DashboardDataService(BaseDashboardService):
                 log_type='authentication'
             )
             
+            # Apply role-based filtering for auth logs
+            if limited_access and current_user:
+                auth_logs = auth_logs.filter(user=current_user)
+            
             total_auth = auth_logs.count()
             failed_auth = auth_logs.filter(is_success=False).count()
             auth_success_rate = ((total_auth - failed_auth) / total_auth * 100) if total_auth > 0 else 100
             
             # 2. Database Health
             db_status = 'Operational'
+            db_latency = 0
             try:
+                import time
+                start_time = time.time()
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT 1")
                     cursor.fetchone()
-                    db_status = 'Operational'
-            except:
+                    db_latency = (time.time() - start_time) * 1000  # Convert to milliseconds
+                    db_status = 'Operational' if db_latency < 100 else 'Degraded'
+            except Exception as e:
                 db_status = 'Unavailable'
+                logger.error(f"Database health check failed: {str(e)}")
             
             # 3. Incident Processing Health
-            total_incidents = Incident.objects.filter(
+            incident_qs = Incident.objects.filter(
                 created_at__gte=start_date,
                 created_at__lte=end_date
-            ).count()
+            )
             
-            overdue_incidents = Incident.objects.filter(
-                status__in=['pending', 'investigating', 'assigned', 'in_progress'],
-                sla_due_date__lt=timezone.now()
-            ).count()
+            # Apply role-based filtering for incidents
+            if limited_access and current_user:
+                incident_qs = incident_qs.filter(
+                    models.Q(created_by=current_user) | 
+                    models.Q(assigned_to=current_user)
+                )
             
-            if overdue_incidents > 5:
-                incident_status = 'Critical'
-            elif overdue_incidents > 2:
-                incident_status = 'Warning'
+            total_incidents = incident_qs.count()
+            
+            # Check for overdue incidents based on user role
+            if limited_access:
+                # For limited access users, only count their own overdue incidents
+                overdue_incidents = incident_qs.filter(
+                    status__in=['pending', 'investigating', 'assigned', 'in_progress'],
+                    sla_due_date__lt=timezone.now()
+                ).count()
             else:
-                incident_status = 'Healthy'
+                # For admin/HR/security analysts, count all overdue incidents
+                overdue_incidents = Incident.objects.filter(
+                    status__in=['pending', 'investigating', 'assigned', 'in_progress'],
+                    sla_due_date__lt=timezone.now()
+                ).count()
+                
+                # Also check critical overdue incidents (beyond SLA by more than 24 hours)
+                critical_overdue = Incident.objects.filter(
+                    status__in=['pending', 'investigating', 'assigned', 'in_progress'],
+                    sla_due_date__lt=timezone.now() - timedelta(hours=24)
+                ).count()
             
-            return [
+            # Determine incident status
+            if limited_access:
+                # For limited access users, show personal incident health
+                if overdue_incidents > 2:
+                    incident_status = 'Critical'
+                elif overdue_incidents > 0:
+                    incident_status = 'Warning'
+                else:
+                    incident_status = 'Healthy'
+            else:
+                # For full access users, show system-wide incident health
+                if overdue_incidents > 5 or (total_incidents > 0 and overdue_incidents / total_incidents > 0.3):
+                    incident_status = 'Critical'
+                elif overdue_incidents > 2 or (total_incidents > 0 and overdue_incidents / total_incidents > 0.1):
+                    incident_status = 'Warning'
+                else:
+                    incident_status = 'Healthy'
+            
+            # 4. API/Endpoint Health (optional)
+            api_health = self._get_api_health(start_date, end_date, limited_access, current_user)
+            
+            # 5. User Activity Health
+            user_activity_status = self._get_user_activity_health(start_date, end_date, limited_access, current_user)
+            
+            health_components = [
                 {
                     'component': 'Authentication System',
-                    'status': 'Operational' if auth_success_rate > 95 else 'Degraded',
+                    'status': 'Operational' if auth_success_rate > 95 else 'Degraded' if auth_success_rate > 80 else 'Critical',
                     'uptime': round(auth_success_rate, 2),
                     'last_check': timezone.now(),
-                    'issues': failed_auth
+                    'issues': failed_auth,
+                    'total_requests': total_auth,
+                    'details': {
+                        'success_rate': f"{auth_success_rate:.2f}%",
+                        'failed_attempts': failed_auth,
+                        'total_attempts': total_auth
+                    }
                 },
                 {
                     'component': 'Database',
                     'status': db_status,
-                    'uptime': 99.95 if db_status == 'Operational' else 95.0,
+                    'uptime': 99.95 if db_status == 'Operational' else 99.5 if db_status == 'Degraded' else 95.0,
                     'last_check': timezone.now(),
-                    'issues': 1 if db_status != 'Operational' else 0
+                    'issues': 1 if db_status != 'Operational' else 0,
+                    'details': {
+                        'latency_ms': round(db_latency, 2),
+                        'status': db_status
+                    }
                 },
                 {
                     'component': 'Incident Management',
                     'status': incident_status,
-                    'uptime': 100 - (overdue_incidents / max(total_incidents, 1) * 10) if total_incidents > 0 else 100,
+                    'uptime': 100 - min(100, (overdue_incidents / max(total_incidents, 1) * 20)) if total_incidents > 0 else 100,
                     'last_check': timezone.now(),
-                    'issues': overdue_incidents
+                    'issues': overdue_incidents,
+                    'details': {
+                        'total_incidents': total_incidents,
+                        'overdue_incidents': overdue_incidents,
+                        'critical_overdue': critical_overdue if not limited_access else None,
+                        'overdue_rate': round((overdue_incidents / max(total_incidents, 1)) * 100, 2) if total_incidents > 0 else 0
+                    }
                 }
             ]
+            
+            # Add API health if available
+            if api_health:
+                health_components.append(api_health)
+            
+            # Add user activity health
+            if user_activity_status:
+                health_components.append(user_activity_status)
+            
+            # Add overall system health summary for full access users
+            if not limited_access:
+                overall_status = self._calculate_overall_health(health_components)
+                health_components.insert(0, overall_status)
+            
+            return health_components
         except Exception as e:
             logger.error(f"Error getting system health: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
-    
-    def get_training_progress(self, department_id=None):
-        """Get real training progress data - FIXED"""
+
+    def _get_api_health(self, start_date, end_date, limited_access=False, current_user=None):
+        """Get API endpoint health metrics"""
         try:
+            api_logs = UserLog.objects.filter(
+                timestamp__gte=start_date,
+                timestamp__lte=end_date,
+                endpoint__isnull=False
+            )
+            
+            if limited_access and current_user:
+                api_logs = api_logs.filter(user=current_user)
+            
+            total_api_calls = api_logs.count()
+            failed_api_calls = api_logs.filter(status_code__gte=400).count() if total_api_calls > 0 else 0
+            avg_response_time = api_logs.exclude(duration__isnull=True).aggregate(
+                avg_duration=Avg('duration')
+            )['avg_duration']
+            
+            api_success_rate = ((total_api_calls - failed_api_calls) / total_api_calls * 100) if total_api_calls > 0 else 100
+            
+            status = 'Operational'
+            if api_success_rate < 90:
+                status = 'Critical'
+            elif api_success_rate < 95:
+                status = 'Degraded'
+            
+            # Convert timedelta to milliseconds safely
+            avg_response_time_ms = 0
+            if avg_response_time:
+                if hasattr(avg_response_time, 'total_seconds'):
+                    # It's a timedelta object
+                    avg_response_time_ms = avg_response_time.total_seconds() * 1000
+                else:
+                    # It's already a number (float/int)
+                    avg_response_time_ms = float(avg_response_time) * 1000
+            
+            return {
+                'component': 'API Endpoints',
+                'status': status,
+                'uptime': round(api_success_rate, 2),
+                'last_check': timezone.now(),
+                'issues': failed_api_calls,
+                'details': {
+                    'total_calls': total_api_calls,
+                    'failed_calls': failed_api_calls,
+                    'avg_response_time_ms': round(avg_response_time_ms, 2),
+                    'success_rate': f"{api_success_rate:.2f}%"
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting API health: {str(e)}")
+            return None
+
+    def _get_user_activity_health(self, start_date, end_date, limited_access=False, current_user=None):
+        """Get user activity health metrics"""
+        try:
+            activity_logs = UserLog.objects.filter(
+                timestamp__gte=start_date,
+                timestamp__lte=end_date
+            )
+            
+            if limited_access and current_user:
+                activity_logs = activity_logs.filter(user=current_user)
+            
+            total_activities = activity_logs.count()
+            
+            # Calculate unique active users
+            active_users = activity_logs.values('user').distinct().count() if not limited_access else 1
+            
+            # Calculate activity rate (activities per hour)
+            hours = (end_date - start_date).total_seconds() / 3600
+            activity_rate = total_activities / hours if hours > 0 else 0
+            
+            status = 'Healthy'
+            if activity_rate < 1:  # Less than 1 activity per hour
+                status = 'Low Activity'
+            elif activity_rate > 100:  # More than 100 activities per hour
+                status = 'High Activity'
+            
+            return {
+                'component': 'User Activity',
+                'status': status,
+                'uptime': 99.9 if activity_rate > 0 else 95.0,
+                'last_check': timezone.now(),
+                'issues': 0 if activity_rate > 0 else 1,
+                'details': {
+                    'total_activities': total_activities,
+                    'active_users': active_users,
+                    'activity_rate_per_hour': round(activity_rate, 2),
+                    'time_range': f"{start_date.date()} to {end_date.date()}"
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error getting user activity health: {str(e)}")
+            return None
+
+    def _calculate_overall_health(self, health_components):
+        """Calculate overall system health based on individual components"""
+        try:
+            if not health_components:
+                return None
+            
+            # Define weights for each component
+            weights = {
+                'Authentication System': 0.3,
+                'Database': 0.3,
+                'Incident Management': 0.25,
+                'API Endpoints': 0.1,
+                'User Activity': 0.05
+            }
+            
+            total_score = 0
+            total_weight = 0
+            
+            for component in health_components:
+                name = component['component']
+                weight = weights.get(name, 0.1)
+                
+                # Convert status to score
+                status_score = {
+                    'Operational': 100,
+                    'Healthy': 100,
+                    'Degraded': 60,
+                    'Warning': 50,
+                    'Critical': 30,
+                    'Unavailable': 0,
+                    'Low Activity': 80,
+                    'High Activity': 90
+                }.get(component['status'], 50)
+                
+                total_score += (status_score * weight)
+                total_weight += weight
+            
+            overall_score = total_score / total_weight if total_weight > 0 else 0
+            
+            # Determine overall status
+            if overall_score >= 90:
+                overall_status = 'Healthy'
+            elif overall_score >= 70:
+                overall_status = 'Degraded'
+            elif overall_score >= 50:
+                overall_status = 'Warning'
+            else:
+                overall_status = 'Critical'
+            
+            return {
+                'component': 'Overall System Health',
+                'status': overall_status,
+                'uptime': round(overall_score, 2),
+                'last_check': timezone.now(),
+                'issues': sum(c.get('issues', 0) for c in health_components),
+                'details': {
+                    'component_count': len(health_components),
+                    'average_score': round(overall_score, 2),
+                    'component_breakdown': [
+                        {
+                            'name': c['component'],
+                            'status': c['status'],
+                            'score': c['uptime']
+                        } for c in health_components
+                    ]
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error calculating overall health: {str(e)}")
+            return None
+        
+        
+    def get_training_progress(self, department_id=None, current_user=None):
+        """Get training progress data with role-based filtering and detailed analytics"""
+        try:
+            # Determine access level based on user role
+            limited_access = False
+            if current_user and current_user.role in ['employee', 'compliance_officer']:
+                limited_access = True
+            
+            # Get base user queryset
             user_qs = self.get_user_queryset(department_id)
             user_ids = user_qs.values_list('id', flat=True)
             
-            # Get all trainings that have candidates from these users
-            candidate_trainings = Candidate.objects.filter(
-                learner__in=user_ids
-            ).values_list('training_id', flat=True).distinct()
-            
-            trainings = Training.objects.filter(id__in=candidate_trainings)[:5]  # Limit to 5 trainings
-            
-            progress_data = []
-            
-            for training in trainings:
-                candidates = Candidate.objects.filter(training=training)
+            if limited_access:
+                # For employees/compliance officers: get their own trainings
+                candidates = Candidate.objects.filter(learner=current_user)
+                trainings = Training.objects.filter(
+                    id__in=candidates.values_list('training_id', flat=True)
+                ).distinct()
                 
-                total_candidates = candidates.count()
-                completed_candidates = candidates.filter(status='completed').count()
+                progress_data = []
                 
-                completion_rate = 0
-                if total_candidates > 0:
-                    completion_rate = (completed_candidates / total_candidates) * 100
+                for training in trainings:
+                    # Get the specific candidate for this training
+                    candidate = candidates.filter(training=training).first()
+                    if not candidate:
+                        continue
+                    
+                    # Get learning progress
+                    learning_progress = LearningProgress.objects.filter(
+                        candidate=candidate,
+                        training=training
+                    ).first()
+                    
+                    if learning_progress:
+                        total_modules = learning_progress.total_modules
+                        completed_modules = learning_progress.completed_modules
+                        progress_percentage = float(learning_progress.progress_percentage)
+                        
+                        # Get module completion details
+                        module_completions = ModuleCompletion.objects.filter(
+                            learning_progress=learning_progress
+                        ).select_related('module')
+                        
+                        completed_modules_list = []
+                        in_progress_modules_list = []
+                        
+                        for module_completion in module_completions:
+                            module_data = {
+                                'module_id': module_completion.module.id,
+                                'module_name': module_completion.module.name,
+                                'is_completed': module_completion.is_completed,
+                                'completed_at': module_completion.completed_at,
+                                'time_spent_minutes': module_completion.time_spent_minutes
+                            }
+                            
+                            if module_completion.is_completed:
+                                completed_modules_list.append(module_data)
+                            else:
+                                in_progress_modules_list.append(module_data)
+                        
+                        # Calculate average time per module
+                        avg_time_per_module = 0
+                        if completed_modules > 0:
+                            total_time = sum(
+                                mc.time_spent_minutes for mc in module_completions if mc.is_completed
+                            )
+                            avg_time_per_module = total_time / completed_modules
+                        
+                        # Determine status
+                        if progress_percentage == 100:
+                            status = 'completed'
+                        elif progress_percentage > 0:
+                            status = 'in_progress'
+                        else:
+                            status = 'not_started'
+                        
+                        progress_data.append({
+                            'training_id': training.id,
+                            'training_name': training.name,
+                            'training_description': training.description,
+                            'status': status,
+                            'progress_percentage': progress_percentage,
+                            'total_modules': total_modules,
+                            'completed_modules': completed_modules,
+                            'remaining_modules': total_modules - completed_modules,
+                            'average_time_per_module_hours': round(avg_time_per_module / 60, 2),
+                            'last_activity': learning_progress.last_activity,
+                            'started_at': learning_progress.started_at,
+                            'estimated_completion_date': learning_progress.estimated_completion_date,
+                            'module_details': {
+                                'completed': completed_modules_list,
+                                'in_progress': in_progress_modules_list[:3]  # Show first 3 in-progress modules
+                            }
+                        })
+                    else:
+                        # No progress yet
+                        progress_data.append({
+                            'training_id': training.id,
+                            'training_name': training.name,
+                            'training_description': training.description,
+                            'status': 'not_started',
+                            'progress_percentage': 0,
+                            'total_modules': training.modules.count(),
+                            'completed_modules': 0,
+                            'remaining_modules': training.modules.count(),
+                            'average_time_per_module_hours': 0,
+                            'last_activity': None,
+                            'started_at': None,
+                            'estimated_completion_date': None,
+                            'module_details': {
+                                'completed': [],
+                                'in_progress': []
+                            }
+                        })
                 
-                progress_data.append({
-                    'training_id': training.id,
-                    'training_name': training.name,
-                    'total_candidates': total_candidates,
-                    'completed_candidates': completed_candidates,
-                    'completion_rate': round(completion_rate, 2),
-                    'average_time': 24  # Placeholder
-                })
+                # Calculate overall statistics for the user
+                if progress_data:
+                    overall_stats = {
+                        'total_trainings': len(progress_data),
+                        'completed_trainings': sum(1 for p in progress_data if p['status'] == 'completed'),
+                        'in_progress_trainings': sum(1 for p in progress_data if p['status'] == 'in_progress'),
+                        'not_started_trainings': sum(1 for p in progress_data if p['status'] == 'not_started'),
+                        'average_progress': round(sum(p['progress_percentage'] for p in progress_data) / len(progress_data), 2),
+                        'total_modules_completed': sum(p['completed_modules'] for p in progress_data),
+                        'total_modules': sum(p['total_modules'] for p in progress_data)
+                    }
+                    
+                    return {
+                        'user_progress': progress_data,
+                        'overall_stats': overall_stats
+                    }
+                
+                return {
+                    'user_progress': [],
+                    'overall_stats': {
+                        'total_trainings': 0,
+                        'completed_trainings': 0,
+                        'in_progress_trainings': 0,
+                        'not_started_trainings': 0,
+                        'average_progress': 0,
+                        'total_modules_completed': 0,
+                        'total_modules': 0
+                    }
+                }
             
-            return progress_data
+            else:
+                # For admin, HR managers, security analysts: get all trainings with candidate statistics
+                # Get all trainings that have candidates from the filtered users
+                candidate_trainings = Candidate.objects.filter(
+                    learner__in=user_ids
+                ).values_list('training_id', flat=True).distinct()
+                
+                trainings = Training.objects.filter(id__in=candidate_trainings).order_by('-created_at')
+                
+                progress_data = []
+                
+                for training in trainings:
+                    # Get all candidates for this training
+                    candidates = Candidate.objects.filter(training=training, learner__in=user_ids)
+                    
+                    total_candidates = candidates.count()
+                    
+                    if total_candidates == 0:
+                        continue
+                    
+                    # Get learning progress for all candidates
+                    learning_progresses = LearningProgress.objects.filter(
+                        candidate__in=candidates,
+                        training=training
+                    ).select_related('candidate__learner')
+                    
+                    # Calculate statistics
+                    completed_candidates = 0
+                    in_progress_candidates = 0
+                    not_started_candidates = 0
+                    
+                    progress_percentages = []
+                    total_completed_modules = 0
+                    total_modules_count = 0
+                    
+                    for candidate in candidates:
+                        progress = learning_progresses.filter(candidate=candidate).first()
+                        
+                        if progress:
+                            progress_percentage = float(progress.progress_percentage)
+                            progress_percentages.append(progress_percentage)
+                            
+                            if progress_percentage == 100:
+                                completed_candidates += 1
+                            elif progress_percentage > 0:
+                                in_progress_candidates += 1
+                            else:
+                                not_started_candidates += 1
+                            
+                            total_completed_modules += progress.completed_modules
+                            total_modules_count += progress.total_modules
+                        else:
+                            not_started_candidates += 1
+                            progress_percentages.append(0)
+                    
+                    # Calculate averages
+                    average_progress = sum(progress_percentages) / total_candidates if total_candidates > 0 else 0
+                    average_modules_completed = total_completed_modules / total_candidates if total_candidates > 0 else 0
+                    
+                    # Calculate completion rate
+                    completion_rate = (completed_candidates / total_candidates * 100) if total_candidates > 0 else 0
+                    
+                    # Get top performers (candidates with highest progress)
+                    top_performers = []
+                    if learning_progresses.exists():
+                        top_progress = learning_progresses.order_by('-progress_percentage')[:5]
+                        for progress in top_progress:
+                            top_performers.append({
+                                'candidate_name': progress.candidate.learner.full_name,
+                                'candidate_email': progress.candidate.learner.email,
+                                'progress_percentage': float(progress.progress_percentage),
+                                'completed_modules': progress.completed_modules,
+                                'total_modules': progress.total_modules
+                            })
+                    
+                    # Get at-risk candidates (low progress)
+                    at_risk_candidates = []
+                    at_risk_progress = learning_progresses.filter(
+                        progress_percentage__lt=30,
+                        progress_percentage__gt=0
+                    ).order_by('progress_percentage')[:5]
+                    
+                    for progress in at_risk_progress:
+                        at_risk_candidates.append({
+                            'candidate_name': progress.candidate.learner.full_name,
+                            'candidate_email': progress.candidate.learner.email,
+                            'progress_percentage': float(progress.progress_percentage),
+                            'completed_modules': progress.completed_modules,
+                            'total_modules': progress.total_modules,
+                            'last_activity': progress.last_activity
+                        })
+                    
+                    progress_data.append({
+                        'training_id': training.id,
+                        'training_name': training.name,
+                        'training_description': training.description,
+                        'total_candidates': total_candidates,
+                        'completed_candidates': completed_candidates,
+                        'in_progress_candidates': in_progress_candidates,
+                        'not_started_candidates': not_started_candidates,
+                        'completion_rate': round(completion_rate, 2),
+                        'average_progress': round(average_progress, 2),
+                        'average_modules_completed': round(average_modules_completed, 2),
+                        'total_modules_count': training.modules.count(),
+                        'total_completed_modules_across_candidates': total_completed_modules,
+                        'top_performers': top_performers,
+                        'at_risk_candidates': at_risk_candidates,
+                        'created_at': training.created_at
+                    })
+                
+                # Calculate overall organizational statistics
+                if progress_data:
+                    overall_stats = {
+                        'total_trainings': len(progress_data),
+                        'total_candidates': sum(p['total_candidates'] for p in progress_data),
+                        'total_completed_candidates': sum(p['completed_candidates'] for p in progress_data),
+                        'total_in_progress_candidates': sum(p['in_progress_candidates'] for p in progress_data),
+                        'overall_completion_rate': round(
+                            sum(p['completed_candidates'] for p in progress_data) / 
+                            sum(p['total_candidates'] for p in progress_data) * 100 
+                            if sum(p['total_candidates'] for p in progress_data) > 0 else 0, 2
+                        ),
+                        'average_training_progress': round(
+                            sum(p['average_progress'] for p in progress_data) / len(progress_data), 2
+                        ),
+                        'best_performing_training': max(progress_data, key=lambda x: x['completion_rate'])['training_name'] if progress_data else None,
+                        'worst_performing_training': min(progress_data, key=lambda x: x['completion_rate'])['training_name'] if progress_data else None
+                    }
+                    
+                    return {
+                        'trainings_progress': progress_data,
+                        'overall_stats': overall_stats
+                    }
+                
+                return {
+                    'trainings_progress': [],
+                    'overall_stats': {
+                        'total_trainings': 0,
+                        'total_candidates': 0,
+                        'total_completed_candidates': 0,
+                        'total_in_progress_candidates': 0,
+                        'overall_completion_rate': 0,
+                        'average_training_progress': 0,
+                        'best_performing_training': None,
+                        'worst_performing_training': None
+                    }
+                }
+                
         except Exception as e:
             logger.error(f"Error getting training progress: {str(e)}")
-            return []
-    
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'error': str(e),
+                'trainings_progress': [],
+                'overall_stats': {}
+            } if not limited_access else {
+                'error': str(e),
+                'user_progress': [],
+                'overall_stats': {}
+            }
+      
+        
     def get_risk_distribution(self, start_date, end_date, department_id=None):
-        """Get real risk distribution from incidents"""
-        try:
-            incident_qs = self.get_incident_queryset(start_date, end_date, department_id)
-            
-            severity_counts = incident_qs.values('severity').annotate(
-                count=Count('id')
-            ).order_by('severity')
-            
-            total_incidents = incident_qs.count()
-            
-            risk_distribution = []
-            
-            for item in severity_counts:
-                percentage = (item['count'] / total_incidents * 100) if total_incidents > 0 else 0
+            """Get real risk distribution from incidents"""
+            try:
+                incident_qs = self.get_incident_queryset(start_date, end_date, department_id)
                 
-                risk_distribution.append({
-                    'risk_level': item['severity'],
-                    'count': item['count'],
-                    'percentage': round(percentage, 2),
-                    'departments': []
-                })
-            
-            return risk_distribution
-        except Exception as e:
-            logger.error(f"Error getting risk distribution: {str(e)}")
-            return []
-    
-    def get_user_activities(self, start_date, end_date, department_id=None):
-        """Get real user activity data - SIMPLIFIED"""
-        try:
-            if self.user.role not in ['admin', 'hr_manager', 'security_analyst', 'compliance_officer']:
+                severity_counts = incident_qs.values('severity').annotate(
+                    count=Count('id')
+                ).order_by('severity')
+                
+                total_incidents = incident_qs.count()
+                
+                risk_distribution = []
+                
+                for item in severity_counts:
+                    percentage = (item['count'] / total_incidents * 100) if total_incidents > 0 else 0
+                    
+                    risk_distribution.append({
+                        'risk_level': item['severity'],
+                        'count': item['count'],
+                        'percentage': round(percentage, 2),
+                        'departments': []
+                    })
+                
+                return risk_distribution
+            except Exception as e:
+                logger.error(f"Error getting risk distribution: {str(e)}")
                 return []
-            
-            user_qs = self.get_user_queryset(department_id)
-            
-            user_activities = []
-            
-            for user in user_qs[:10]:  # Limit to 10 users
-                user_logs = UserLog.objects.filter(
-                    user=user,
-                    timestamp__gte=start_date,
-                    timestamp__lte=end_date
-                )
+        
+    def get_user_activities(self, start_date, end_date, department_id=None):
+            """Get real user activity data - SIMPLIFIED"""
+            try:
+                if self.user.role not in ['admin', 'hr_manager', 'security_analyst', 'compliance_officer']:
+                    return []
                 
-                last_log = user_logs.order_by('-timestamp').first()
-                last_activity = last_log.timestamp if last_log else user.created_at
+                user_qs = self.get_user_queryset(department_id)
                 
-                user_activities.append({
-                    'user_id': user.id,
-                    'user_name': user.full_name,
-                    'user_email': user.email,
-                    'role': user.get_role_display() if hasattr(user, 'get_role_display') else user.role,
-                    'last_activity': last_activity,
-                    'total_activities': user_logs.count(),
-                    'flagged_activities': user_logs.filter(is_success=False).count()
-                })
-            
-            # Sort by last activity
-            return sorted(user_activities, key=lambda x: x['last_activity'], reverse=True)
-        except Exception as e:
-            logger.error(f"Error getting user activities: {str(e)}")
-            return []
+                user_activities = []
+                
+                for user in user_qs[:10]:  # Limit to 10 users
+                    user_logs = UserLog.objects.filter(
+                        user=user,
+                        timestamp__gte=start_date,
+                        timestamp__lte=end_date
+                    )
+                    
+                    last_log = user_logs.order_by('-timestamp').first()
+                    last_activity = last_log.timestamp if last_log else user.created_at
+                    
+                    user_activities.append({
+                        'user_id': user.id,
+                        'user_name': user.full_name,
+                        'user_email': user.email,
+                        'role': user.get_role_display() if hasattr(user, 'get_role_display') else user.role,
+                        'last_activity': last_activity,
+                        'total_activities': user_logs.count(),
+                        'flagged_activities': user_logs.filter(is_success=False).count()
+                    })
+                
+                # Sort by last activity
+                return sorted(user_activities, key=lambda x: x['last_activity'], reverse=True)
+            except Exception as e:
+                logger.error(f"Error getting user activities: {str(e)}")
+                return []
 
 
 # ==================== API VIEWS ====================
@@ -794,12 +1647,18 @@ class RoleBasedDashboardView(APIView):
             user = request.user
             filters = request.GET.dict()
             
+            # DEBUG: Log request
+            logger.info("=" * 80)
+            logger.info("DASHBOARD API CALL")
+            logger.info(f"User: {user.email} (Role: {user.role})")
+            logger.info(f"Request filters: {filters}")
+            
             # Parse filters
             timeframe = filters.get('timeframe', 'month')
             start_date_str = filters.get('start_date')
             end_date_str = filters.get('end_date')
             department_id = filters.get('department')
-            incident_status = filters.get('status')  # Renamed to avoid conflict
+            incident_status = filters.get('status')
             severity = filters.get('severity')
             
             # Convert department_id
@@ -811,6 +1670,70 @@ class RoleBasedDashboardView(APIView):
             # Initialize data service
             data_service = DashboardDataService(user)
             
+            # DEBUG: Check department data availability
+            logger.info("=" * 40)
+            logger.info("CHECKING DEPARTMENT DATA AVAILABILITY")
+            all_depts = Department.objects.filter(status='active')
+            logger.info(f"Total active departments in system: {all_depts.count()}")
+            
+            for dept in all_depts:
+                logger.info(f"  Dept: {dept.name} (ID: {dept.id})")
+                
+                # Check users in department
+                users_in_dept = CustomUser.objects.filter(
+                    Q(department=dept) | Q(departments=dept),
+                    is_active=True
+                ).distinct().count()
+                logger.info(f"    Users: {users_in_dept}")
+                
+                # Check incidents in department
+                incidents_in_dept = Incident.objects.filter(department=dept).count()
+                logger.info(f"    Incidents: {incidents_in_dept}")
+                
+                # Check if department has any audits
+                audits_in_dept = ComplianceAudit.objects.filter(departments=dept).count()
+                logger.info(f"    Audits: {audits_in_dept}")
+                
+                # Check training candidates in department
+                user_ids = CustomUser.objects.filter(
+                    Q(department=dept) | Q(departments=dept),
+                    is_active=True
+                ).values_list('id', flat=True).distinct()
+                candidates_in_dept = Candidate.objects.filter(learner__in=user_ids).count()
+                logger.info(f"    Training Candidates: {candidates_in_dept}")
+            
+            # Check user's accessible departments
+            accessible_dept_ids = data_service.get_accessible_department_ids()
+            logger.info(f"\nUser's accessible department IDs: {accessible_dept_ids}")
+            
+            # Check if there are any incidents at all in the system
+            total_system_incidents = Incident.objects.count()
+            logger.info(f"Total incidents in entire system: {total_system_incidents}")
+            
+            if total_system_incidents > 0:
+                # Show date range of incidents
+                oldest_incident = Incident.objects.earliest('created_at')
+                newest_incident = Incident.objects.latest('created_at')
+                logger.info(f"Incident date range: {oldest_incident.created_at.date()} to {newest_incident.created_at.date()}")
+                
+                # Show incidents by department
+                logger.info("Incidents by department:")
+                for dept in all_depts:
+                    dept_incident_count = Incident.objects.filter(department=dept).count()
+                    if dept_incident_count > 0:
+                        logger.info(f"  {dept.name}: {dept_incident_count} incidents")
+                    else:
+                        logger.info(f"  {dept.name}: 0 incidents")
+                
+                # Show incidents without department
+                no_dept_incidents = Incident.objects.filter(department__isnull=True).count()
+                if no_dept_incidents > 0:
+                    logger.info(f"  [No Department]: {no_dept_incidents} incidents")
+            else:
+                logger.warning("NO INCIDENTS FOUND IN THE ENTIRE SYSTEM!")
+            
+            logger.info("=" * 40)
+            
             # Get date range
             start_date, end_date = data_service.get_date_range(
                 timeframe=timeframe,
@@ -818,13 +1741,29 @@ class RoleBasedDashboardView(APIView):
                 end_date=end_date_str
             )
             
-            # Fetch all data
+            logger.info(f"Computed date range for filters: {start_date} to {end_date}")
+            
+            # Fetch incident trends with debugging
+            incident_trends = data_service.get_incident_trends(start_date, end_date, department_id, current_user=user)
+            
+            logger.info(f"Incident trends result: {len(incident_trends)} entries")
+            if incident_trends:
+                non_zero_trends = [t for t in incident_trends if t.get('total_incidents', 0) > 0]
+                logger.info(f"Non-zero trend entries: {len(non_zero_trends)}")
+                if non_zero_trends:
+                    logger.info(f"First non-zero trend entry: {non_zero_trends[0] if non_zero_trends else 'None'}")
+            
+            # Fetch all other data
             user_stats = data_service.get_user_statistics(start_date, end_date, department_id)
             incident_stats = data_service.get_incident_statistics(start_date, end_date, department_id)
             audit_stats = data_service.get_audit_statistics(start_date, end_date, department_id)
             training_stats = data_service.get_training_statistics(department_id)
             risk_score = data_service.get_risk_score(start_date, end_date, department_id)
             department_breakdown = data_service.get_department_breakdown(start_date, end_date)
+            
+            # Fetch department performance with debugging
+            department_performance = data_service.get_department_performance(start_date, end_date)
+            logger.info(f"Department performance entries: {len(department_performance)}")
             
             # Compile main stats
             stats = {
@@ -846,24 +1785,39 @@ class RoleBasedDashboardView(APIView):
             # Get all other data
             dashboard_data = {
                 'stats': stats,
-                'access_trends': data_service.get_access_trends(start_date, end_date, department_id, days=7),
-                'incident_trends': data_service.get_incident_trends(start_date, end_date, department_id),
-                'department_performance': data_service.get_department_performance(start_date, end_date),
-                'recent_activities': data_service.get_recent_activities(start_date, end_date, department_id, limit=10),
-                'system_health': data_service.get_system_health(start_date, end_date),
-                'training_progress': data_service.get_training_progress(department_id),
+                'access_trends': data_service.get_access_trends(start_date, end_date, department_id, days=7, current_user=user),
+                'incident_trends': incident_trends,
+                'department_performance': department_performance,
+                'recent_activities': data_service.get_recent_activities(start_date, end_date, department_id, limit=10, current_user=request.user),
+                'system_health': data_service.get_system_health(start_date, end_date, current_user=user),
+                'training_progress': data_service.get_training_progress(department_id, current_user=user),
                 'risk_distribution': data_service.get_risk_distribution(start_date, end_date, department_id),
                 'user_activities': data_service.get_user_activities(start_date, end_date, department_id),
                 'generated_at': timezone.now(),
                 'filters': {
                     'timeframe': timeframe,
                     'department': department_id,
-                    'status': incident_status,  # Using renamed variable
+                    'status': incident_status,
                     'severity': severity,
                     'start_date': start_date_str,
                     'end_date': end_date_str
                 }
             }
+            
+            # DEBUG: Log response summary
+            logger.info("\n" + "=" * 40)
+            logger.info("RESPONSE SUMMARY")
+            logger.info(f"Stats: Total Users={stats['total_users']}, Total Incidents={stats['total_incidents']}, Open Incidents={stats['open_incidents']}")
+            logger.info(f"Incident trends in response: {len(dashboard_data['incident_trends'])}")
+            logger.info(f"Department performance in response: {len(dashboard_data['department_performance'])}")
+            logger.info(f"Access trends in response: {len(dashboard_data['access_trends'])}")
+            logger.info(f"Recent activities in response: {len(dashboard_data['recent_activities'])}")
+            logger.info(f"System health in response: {len(dashboard_data['system_health'])}")
+            logger.info(f"Training progress in response: {dashboard_data['training_progress'] is not None}")
+            logger.info(f"Risk distribution in response: {len(dashboard_data['risk_distribution'])}")
+            logger.info("=" * 40)
+            logger.info("DASHBOARD API CALL - END")
+            logger.info("=" * 80)
             
             return Response(dashboard_data, status=http_status.HTTP_200_OK)
             
@@ -873,7 +1827,6 @@ class RoleBasedDashboardView(APIView):
                 {'error': 'Failed to load dashboard data', 'details': str(e)},
                 status=http_status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
 
 class DashboardFiltersView(APIView):
     """API endpoint to get available dashboard filters based on user role"""

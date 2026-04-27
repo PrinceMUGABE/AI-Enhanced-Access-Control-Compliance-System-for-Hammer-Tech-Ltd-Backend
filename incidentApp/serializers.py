@@ -388,9 +388,40 @@ class CreateIncidentFromLogSerializer(serializers.Serializer):
             if log.incidents.exists():
                 raise serializers.ValidationError('This log already has associated incidents.')
             
-            # Check if log indicates a potential issue
-            if log.is_success and log.activity not in ['login_failed', 'access_denied']:
-                raise serializers.ValidationError('This log does not indicate a security incident.')
+            # EXPANDED: Consider more activities as security incidents
+            # List of activities that indicate potential security concerns
+            security_incident_activities = [
+                'login_failed',
+                'access_denied', 
+                'unauthorized_access',
+                'vulnerability_assessment_view',
+                'vulnerability_scan',
+                'risk_assessment_view',
+                'security_audit_view',
+                'sensitive_data_access',
+                'privilege_escalation',
+                'suspicious_activity',
+                'multiple_failed_logins',
+                'brute_force_attempt',
+                'data_breach_detected',
+                'system_breach',
+                'policy_violation',
+                'compliance_violation'
+            ]
+            
+            # Check if activity is in security incident list OR has high risk score
+            is_security_incident = (
+                log.activity in security_incident_activities or
+                (hasattr(log, 'risk_score') and log.risk_score >= 50) or
+                (hasattr(log, 'danger_zone') and log.danger_zone is True) or
+                (log.is_success is False)  # Failed actions are suspicious
+            )
+            
+            if not is_security_incident:
+                raise serializers.ValidationError(
+                    f'This log (activity: {log.activity}) does not indicate a security incident. '
+                    f'Only security-related activities can create incidents.'
+                )
             
             return value
         except UserLog.DoesNotExist:
@@ -400,13 +431,18 @@ class CreateIncidentFromLogSerializer(serializers.Serializer):
         log_id = validated_data.pop('log_id')
         log = UserLog.objects.get(id=log_id)
         
-        # Calculate risk score based on log
-        risk_score = self.calculate_risk_score(log)
+        # Calculate risk score based on log (override if frontend provided)
+        risk_score = validated_data.pop('risk_score', None)
+        if risk_score is None:
+            risk_score = self.calculate_risk_score(log)
+        
+        # Determine if in danger zone (risk > 70)
+        danger_zone = risk_score > 70
         
         incident = Incident.objects.create(
             log=log,
             risk_score=risk_score,
-            danger_zone=risk_score > 70,  # Consider danger zone if risk > 70
+            danger_zone=danger_zone,
             **validated_data
         )
         
@@ -416,37 +452,79 @@ class CreateIncidentFromLogSerializer(serializers.Serializer):
         """Calculate risk score based on log attributes"""
         risk_score = 0
         
-        # Base on activity type
-        activity_risk = {
-            'login_failed': 60,
-            'access_denied': 70,
-            'unauthorized_access': 80,
-            'data_breach': 90,
+        # Base risk by activity type
+        activity_risk_map = {
+            # High risk activities (70-100)
+            'data_breach_detected': 95,
             'system_breach': 100,
+            'unauthorized_access': 85,
+            'privilege_escalation': 80,
+            
+            # Medium-high risk (60-70)
+            'vulnerability_assessment_view': 65,
+            'vulnerability_scan': 60,
+            'risk_assessment_view': 55,
+            'security_audit_view': 55,
+            'sensitive_data_access': 65,
+            'multiple_failed_logins': 70,
+            'brute_force_attempt': 75,
+            
+            # Medium risk (40-60)
+            'access_denied': 60,
+            'login_failed': 60,
+            'suspicious_activity': 65,
+            'compliance_violation': 60,
+            'policy_violation': 55,
+            
+            # Lower risk (20-40)
+            'view_user_logs': 40,
+            'user_create': 35,
+            'user_update': 30,
+            'profile_update': 25,
+            'password_change': 30,
+            'login': 15,
+            'logout': 10,
         }
         
-        risk_score += activity_risk.get(log.activity, 30)
+        # Get base risk from activity
+        base_risk = activity_risk_map.get(log.activity, 30)
+        risk_score += base_risk
         
-        # Adjust based on success/failure
+        # Adjust based on success/failure (failed actions are riskier)
         if not log.is_success:
-            risk_score += 20
+            risk_score += 25
         
-        # Adjust based on recent activity
+        # Adjust based on endpoint sensitivity
+        sensitive_endpoints = [
+            '/admin/', '/api/admin/', '/user-management/', 
+            '/security/', '/compliance/', '/audit/',
+            '/risk-assessment/', '/vulnerabilities/'
+        ]
+        
+        if log.endpoint:
+            for endpoint in sensitive_endpoints:
+                if endpoint in log.endpoint:
+                    risk_score += 15
+                    break
+        
+        # Adjust based on recent activity (multiple similar actions)
         from datetime import timedelta
         from django.utils.timezone import now
         
-        # If multiple failed attempts from same user/IP
-        recent_failed = UserLog.objects.filter(
+        # Count recent similar activities from same user/IP
+        recent_similar = UserLog.objects.filter(
             user_email=log.user_email,
-            activity='login_failed',
-            is_success=False,
+            activity=log.activity,
             timestamp__gte=now() - timedelta(minutes=30)
         ).count()
         
-        risk_score += min(recent_failed * 10, 30)
+        if recent_similar > 5:
+            risk_score += 20
+        elif recent_similar > 3:
+            risk_score += 10
         
+        # Cap at 100
         return min(risk_score, 100)
-
 
 class ReportSerializer(serializers.ModelSerializer):
     """Serializer for reports"""

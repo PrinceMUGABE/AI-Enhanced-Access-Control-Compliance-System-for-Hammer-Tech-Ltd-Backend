@@ -441,7 +441,7 @@ class IncidentDetailAPIView(generics.RetrieveUpdateDestroyAPIView):
 def create_incident_from_log(request):
     """Create an incident from a user log"""
     try:
-        logger.info(f"Creating incident from log - User: {request.user.email}")
+        print(f"Creating incident from log - User by: {request.user.email} with data: \n{request.data}\n")
         
         serializer = CreateIncidentFromLogSerializer(
             data=request.data,
@@ -449,7 +449,7 @@ def create_incident_from_log(request):
         )
         
         if not serializer.is_valid():
-            logger.error(f"Serializer validation failed: {serializer.errors}")
+            print(f"Serializer validation failed: {serializer.errors}")
             return Response(
                 {"success": False, "errors": serializer.errors},
                 status=status.HTTP_400_BAD_REQUEST
@@ -458,13 +458,26 @@ def create_incident_from_log(request):
         # Check permissions
         user = request.user
         if not can_create_incident(user):
-            logger.warning(f"User {user.email} lacks permission to create incidents")
+            print(f"User {user.email} lacks permission to create incidents")
             return Response(
                 {"success": False, "error": "You don't have permission to create incidents."},
                 status=status.HTTP_403_FORBIDDEN
             )
         
         incident = serializer.save()
+        
+        # Auto-assign department based on the log's user
+        if incident.log and incident.log.user:
+            if incident.log.user.department:
+                incident.department = incident.log.user.department
+                incident.save()
+                print(f"Auto-assigned department {incident.department.name} from log user")
+        
+        # Auto-assign to a user if not already assigned
+        if not incident.assigned_to:
+            assigned_user = IncidentUtils.assign_incident_to_user(incident)
+            if assigned_user:
+                print(f"Auto-assigned to {assigned_user.email}")
         
         # Log activity
         ActivityLogger.create_log(
@@ -478,7 +491,7 @@ def create_incident_from_log(request):
             target_user=incident.assigned_to
         )
         
-        logger.info(f"Successfully created incident {incident.incident_number}")
+        print(f"Successfully created incident {incident.incident_number}")
         return Response(
             {
                 "success": True,
@@ -489,28 +502,120 @@ def create_incident_from_log(request):
         )
     
     except Exception as e:
+        print(f"Error creating incident from log: {str(e)}")
         return handle_exception(e, "Creating incident from log")
-
+    
+    
+    
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_all_incidents(request):
+    """Get all incidents in the system (admin only)"""
+    try:
+        user = request.user
+        
+        # Check if user is admin
+        if not user.is_admin or user.role != 'security_analyst':
+            return Response(
+                {"success": False, "error": "Only administrators can view all incidents."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        logger.info(f"Admin {user.email} fetching all incidents")
+        
+        # Get all incidents
+        incidents = Incident.objects.select_related(
+            'log', 'assigned_to', 'created_by', 'department'
+        ).prefetch_related('comments', 'attachments').order_by('-created_at')
+        
+        # Apply filters
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            incidents = incidents.filter(status=status_filter)
+        
+        severity_filter = request.query_params.get('severity')
+        if severity_filter:
+            incidents = incidents.filter(severity=severity_filter)
+        
+        priority_filter = request.query_params.get('priority')
+        if priority_filter:
+            incidents = incidents.filter(priority=priority_filter)
+        
+        department_filter = request.query_params.get('department')
+        if department_filter:
+            incidents = incidents.filter(department_id=department_filter)
+        
+        search_filter = request.query_params.get('search')
+        if search_filter:
+            incidents = incidents.filter(
+                Q(title__icontains=search_filter) |
+                Q(description__icontains=search_filter) |
+                Q(incident_number__icontains=search_filter)
+            )
+        
+        date_from = request.query_params.get('dateFrom')
+        if date_from:
+            incidents = incidents.filter(created_at__date__gte=date_from)
+        
+        date_to = request.query_params.get('dateTo')
+        if date_to:
+            incidents = incidents.filter(created_at__date__lte=date_to)
+        
+        # Pagination
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('page_size', 10))
+        
+        total_count = incidents.count()
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        paginated_incidents = incidents[start_index:end_index]
+        
+        serializer = IncidentListSerializer(paginated_incidents, many=True)
+        
+        return Response({
+            "success": True,
+            "incidents": serializer.data,
+            "pagination": {
+                "current_page": page,
+                "page_size": page_size,
+                "total_items": total_count,
+                "total_pages": (total_count + page_size - 1) // page_size if page_size > 0 else 1,
+                "has_next": end_index < total_count,
+                "has_previous": start_index > 0
+            }
+        })
+    
+    except Exception as e:
+        return handle_exception(e, "Getting all incidents")
+    
+    
+    
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_user_incidents(request):
-    """Get incidents related to the current user with consistent format"""
+    """Get incidents based on user role - ADMIN can see all incidents"""
     try:
         user = request.user
-        logger.info(f"Getting incidents for user: {user.email}")
+        logger.info(f"Getting incidents for user: {user.email} with role {user.role}")
         
-        # Get incidents where user is involved
-        incidents = Incident.objects.filter(
-            Q(log__user_email=user.email) |
-            Q(assigned_to=user) |
-            Q(created_by=user)
-        ).select_related(
-            'log', 'assigned_to', 'created_by', 'department'
-        ).order_by('-created_at')
+        # For admin users, get ALL incidents (not just their own)
+        if user.is_admin or user.role == 'security_analyst':
+            incidents = Incident.objects.all().select_related(
+                'log', 'assigned_to', 'created_by', 'department'
+            ).order_by('-created_at')
+            logger.info(f"Admin user - showing all {incidents.count()} incidents in system")
+        else:
+            # For non-admin users, get incidents where user is involved
+            incidents = Incident.objects.filter(
+                Q(log__user_email=user.email) |
+                Q(assigned_to=user) |
+                Q(created_by=user)
+            ).select_related(
+                'log', 'assigned_to', 'created_by', 'department'
+            ).order_by('-created_at')
+            logger.info(f"Non-admin user - found {incidents.count()} incidents for user {user.email}")
         
-        logger.info(f"Found {incidents.count()} incidents for user {user.email}")
-        
-        # Apply filters
+        # Apply filters (same for both cases)
         filters_applied = []
         
         status_filter = request.query_params.get('status')
@@ -627,7 +732,8 @@ def get_user_incidents(request):
     
     except Exception as e:
         return handle_exception(e, "Getting user incidents")
-
+    
+    
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def add_incident_comment(request, incident_id):
@@ -2246,6 +2352,7 @@ def trigger_incident_detection(request):
                 """
                 
                 # Create incident
+                print(f"   ⏳ Creating incident...")
                 incident = Incident.objects.create(
                     log=log,
                     title=title,
@@ -2256,14 +2363,27 @@ def trigger_incident_detection(request):
                     danger_zone=True,
                     status='pending',
                     created_by=user,
-                    # Save the request user for activity logging
-                    _request_user=user
+                    _request_user=user  # Store for activity logging
                 )
                 
+                # Auto-assign department based on user
+                incident.assign_department_based_on_user()
+                               
                 # Try to auto-assign using IncidentUtils
                 try:
-                    IncidentUtils.assign_incident_to_user(incident)
-                    logger.debug(f"Auto-assigned incident {incident.incident_number}")
+                    
+                    # Auto-assign to a user
+                    print(f"   ⏳ Auto-assigning incident...")
+                    assigned_user = IncidentUtils.assign_incident_to_user(incident)
+                    if assigned_user:
+                        print(f"   ✅ Assigned to: {assigned_user.email}")
+                        
+                        # Also set the department from the assigned user if still not set
+                        if not incident.department and assigned_user.department:
+                            incident.department = assigned_user.department
+                            incident.save()
+                    else:
+                        print(f"   ⚠️  No eligible user found for assignment")
                 except Exception as assign_error:
                     logger.warning(f"Failed to auto-assign incident {incident.incident_number}: {str(assign_error)}")
                     # Incident is still created, just not assigned

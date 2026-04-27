@@ -402,63 +402,68 @@ class IncidentUtils:
         # Cap at 100
         return min(risk_score, 100)
 
-        @staticmethod
-        def assign_incident_to_user(incident):
-            """
-            Auto-assign incident to appropriate user based on department and workload
-            """
-            from userApp.models import CustomUser
-            from django.utils.timezone import now
-            
-            # Get eligible users (security analysts and admins)
-            eligible_users = CustomUser.objects.filter(
-                is_active=True,
-                role__in=['admin', 'hr_manager', 'security_analyst', 'compliance_officer']
-            )
-            
-            # Filter by department if incident has one
-            if incident.department:
-                eligible_users = eligible_users.filter(
-                    Q(role__in=['admin', 'hr_manager']) |
-                    Q(departments=incident.department)
-                ).distinct()
-            
-            # Find user with lowest workload
-            best_user = None
-            min_workload = float('inf')
-            
-            for user in eligible_users:
-                # Count active incidents
-                workload = Incident.objects.filter(
-                    assigned_to=user,
-                    status__in=['pending', 'investigating', 'assigned', 'in_progress']
-                ).count()
+    @staticmethod
+    def assign_incident_to_user(incident):
+            """Auto-assign incident to the most appropriate user"""
+            try:
+                from userApp.models import CustomUser
+                from django.db.models import Q, Count
                 
-                if workload < min_workload:
-                    min_workload = workload
-                    best_user = user
-            
-            if best_user:
-                incident.assigned_to = best_user
-                incident.assigned_at = now()
-                incident.status = 'assigned'
-                incident.save()
+                # Base queryset of users who can handle incidents
+                eligible_users = CustomUser.objects.filter(
+                    is_active=True,
+                    role__in=['admin', 'hr_manager', 'security_analyst', 'compliance_officer']
+                )
                 
-                # Send notification
-                NotificationUtils.send_incident_assignment_notification(incident)
-            
-            return best_user
-
-        @staticmethod
-        def escalate_incident(incident, reason, escalated_by):
-            """
-            Escalate incident to higher severity and notify relevant parties
-            """
-            incident.escalate(reason, escalated_by)
-            incident.save()
-            
-            # Notify relevant parties
-            NotificationUtils.send_sla_violation_notification(incident)
+                # Filter by department if incident has one
+                if incident.department:
+                    eligible_users = eligible_users.filter(
+                        Q(department=incident.department) |
+                        Q(departments=incident.department) |
+                        Q(role__in=['admin', 'hr_manager'])  # Always include admin/HR
+                    ).distinct()
+                
+                # Order by workload (fewest active incidents first)
+                eligible_users = eligible_users.annotate(
+                    active_count=Count('assigned_incidents', filter=Q(
+                        assigned_incidents__status__in=['pending', 'investigating', 'assigned', 'in_progress']
+                    ))
+                ).order_by('active_count')
+                
+                # Get the best candidate
+                best_user = eligible_users.first()
+                
+                if best_user:
+                    incident.assigned_to = best_user
+                    incident.assigned_at = now()
+                    incident.status = 'assigned'
+                    
+                    # Set SLA based on severity if not set
+                    if not incident.sla_due_date:
+                        incident.set_sla_due_date()
+                    
+                    incident.save()
+                    
+                    # Send notification
+                    NotificationUtils.send_incident_assignment_notification(incident)
+                    
+                    return best_user
+                
+                return None
+                
+            except Exception as e:
+                logger.error(f"Error auto-assigning incident: {str(e)}")
+                return None
+                @staticmethod
+                def escalate_incident(incident, reason, escalated_by):
+                    """
+                    Escalate incident to higher severity and notify relevant parties
+                    """
+                    incident.escalate(reason, escalated_by)
+                    incident.save()
+                    
+                    # Notify relevant parties
+                    NotificationUtils.send_sla_violation_notification(incident)
 
 
 

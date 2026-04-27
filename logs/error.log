@@ -3507,3 +3507,15 @@ ERROR 2026-04-11 19:20:38,885 log 10264 15956 Internal Server Error: /auth/login
 ERROR 2026-04-11 19:28:12,611 log 5780 14144 Internal Server Error: /auth/login-with-otp/request/
 ERROR 2026-04-11 19:58:17,386 log 13136 1104 Internal Server Error: /incidents/danger-zone/
 ERROR 2026-04-11 19:59:31,017 log 13136 10980 Internal Server Error: /incidents/danger-zone/
+ERROR 2026-04-13 09:55:05,195 log 3436 7404 Internal Server Error: /progress/module-completion/
+ERROR 2026-04-13 09:55:17,340 log 3436 7404 Internal Server Error: /progress/module-completion/
+ERROR 2026-04-13 09:57:01,724 log 3436 7404 Internal Server Error: /progress/module-completion/
+ERROR 2026-04-13 09:58:10,633 log 3436 7404 Internal Server Error: /progress/module-completion/
+ERROR 2026-04-13 10:01:05,622 log 3436 7404 Internal Server Error: /progress/module-completion/
+ERROR 2026-04-13 11:03:16,891 log 15240 3080 Internal Server Error: /reports/dashboard/
+ERROR 2026-04-13 11:03:16,895 log 15240 3080 Internal Server Error: /reports/dashboard/
+ERROR 2026-04-17 11:03:54,898 log 12808 6248 Internal Server Error: /risk-assessment/dashboard-data/
+ERROR 2026-04-17 11:03:55,139 log 12808 17004 Internal Server Error: /risk-assessment/dashboard-data/
+ERROR 2026-04-17 11:07:34,454 log 17188 7556 Internal Server Error: /risk-assessment/dashboard-data/
+ERROR 2026-04-17 11:07:34,674 log 17188 14364 Internal Server Error: /risk-assessment/dashboard-data/
+ERROR 2026-04-17 11:19:13,842 log 8332 3436 Internal Server Error: /risk-assessment/dashboard-data/

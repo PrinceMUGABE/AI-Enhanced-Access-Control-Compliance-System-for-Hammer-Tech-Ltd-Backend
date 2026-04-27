@@ -8,6 +8,7 @@ urlpatterns = [
     path('', views.IncidentListCreateAPIView.as_view(), name='incident-list-create'),
     path('<int:id>/', views.IncidentDetailAPIView.as_view(), name='incident-detail'),
     path('from-log/', views.create_incident_from_log, name='create-incident-from-log'),
+    path('all/', views.get_all_incidents, name='all-incidents'),
     path('my/', views.get_user_incidents, name='my-incidents'),
     path('danger-zone/', views.get_danger_zone_logs, name='danger-zone-logs'),
     path('<int:incident_id>/comments/', views.add_incident_comment, name='add-incident-comment'),

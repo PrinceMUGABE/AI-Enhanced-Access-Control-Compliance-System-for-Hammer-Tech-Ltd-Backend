@@ -8,6 +8,7 @@ urlpatterns = [
     
     # User risk profiles
     path('users/profiles/', views.get_user_risk_profiles, name='user-risk-profiles'),
+    path('users/<int:user_id>/risk/', views.get_user_risk_profile_detail, name='user-risk-profile-detail'),
     
     # Security metrics
     path('metrics/', views.get_security_metrics, name='security-metrics'),
@@ -23,4 +24,8 @@ urlpatterns = [
     
     # Dashboard data (for frontend)
     path('dashboard-data/', views.get_risk_dashboard_data, name='risk-dashboard-data'),
+    
+    # Summary and heatmap
+    path('summary/', views.get_risk_summary, name='risk-summary'),
+    path('heatmap/', views.get_risk_heatmap_data, name='risk-heatmap'),
 ]
