@@ -1,3 +1,5 @@
+# complianceAuditApp/models.py
+
 from django.db import models
 from django.conf import settings
 import uuid
@@ -258,8 +260,6 @@ class ComplianceAudit(models.Model):
             return round((weighted_sum / total_weight) * 100, 2)
         return None
 
-
-# Add/Update these models
 
 class AuditFinding(models.Model):
     """Detailed findings from compliance audits"""

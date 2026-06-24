@@ -2763,9 +2763,16 @@ def get_access_control_stats(request):
     """Get statistics for access control dashboard"""
     try:
         user = request.user
+        print(f"User with role: {user.role} is accessing this endpoint\n")
         
-        if not user.is_admin and not user.is_hr or user.role != 'security_analyst':
-            return Response({"error": "You are not authorized to view these statistics."}, status=403)
+        # Fix: Check if user has permission (admin, HR, or security_analyst)
+        if not (user.is_admin or user.is_hr or user.role == 'security_analyst'):
+            print(f"❌ Access denied for user {user.email} - Role: {user.role}")
+            return Response({
+                "error": "You are not authorized to view these statistics."
+            }, status=403)
+        
+        print(f"✅ Access granted for user {user.email} - Role: {user.role}")
         
         # Get total users
         total_users = CustomUser.objects.count()
@@ -2805,8 +2812,13 @@ def get_access_control_stats(request):
         }, status=200)
         
     except Exception as e:
+        print(f"❌ Error in get_access_control_stats: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return Response({"error": str(e)}, status=500)
 
+
+        
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 @display_response_data
@@ -3335,3 +3347,30 @@ def check_account_lock_status(request):
         return Response({
             'error': f'An error occurred: {str(e)}'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def health_check(request):
+    """
+    Health check endpoint for monitoring and debugging.
+    Returns system status and basic information.
+    """
+    try:
+        # Check database connection
+        from django.db import connection
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            db_status = "connected"
+    except Exception as e:
+        db_status = f"error: {str(e)}"
+    
+    return Response({
+        "status": "healthy",
+        "timestamp": now().isoformat(),
+        "database": db_status,
+        "version": "2.1.0",
+        "environment": "production"  # Change as needed
+    }, status=200)

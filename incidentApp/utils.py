@@ -71,9 +71,153 @@ class IncidentUtils:
         """
         Get comprehensive incident statistics
         """
-        # Replace now() with timezone_now()
-        cutoff_date = timezone_now() - timedelta(days=timeframe_days)
-        # ... rest of the code
+        from django.utils.timezone import now as timezone_now
+        from datetime import timedelta
+        
+        try:
+            # Initialize statistics dictionary with default values
+            statistics = {
+                'total_incidents': 0,
+                'open_incidents': 0,
+                'resolved_incidents': 0,
+                'closed_incidents': 0,
+                'overdue_incidents': 0,
+                'resolution_rate': 0,
+                'avg_resolution_hours': 0,
+                'by_status': {},
+                'by_severity': {},
+                'by_priority': {},
+                'by_department': {},
+                'timeframe_days': timeframe_days,
+                'recent_incidents': [],
+                'danger_zone_incidents': 0
+            }
+            
+            cutoff_date = timezone_now() - timedelta(days=timeframe_days)
+            
+            # Get incidents based on user role
+            if user and (user.is_admin or user.is_hr):
+                queryset = Incident.objects.all()
+            elif user:
+                # For non-admin users, only their incidents
+                queryset = Incident.objects.filter(
+                    Q(log__user_email=user.email) |
+                    Q(assigned_to=user) |
+                    Q(created_by=user)
+                )
+            else:
+                # No user provided - return empty statistics
+                return statistics
+            
+            # Filter by timeframe
+            queryset = queryset.filter(created_at__gte=cutoff_date)
+            
+            # Count total
+            statistics['total_incidents'] = queryset.count()
+            
+            # Count open incidents
+            statistics['open_incidents'] = queryset.filter(
+                status__in=['pending', 'investigating', 'assigned', 'in_progress']
+            ).count()
+            
+            # Count resolved incidents
+            statistics['resolved_incidents'] = queryset.filter(
+                status='resolved'
+            ).count()
+            
+            # Count closed incidents
+            statistics['closed_incidents'] = queryset.filter(
+                status='closed'
+            ).count()
+            
+            # Count overdue incidents (check sla_due_date)
+            from django.utils.timezone import now as timezone_now
+            statistics['overdue_incidents'] = queryset.filter(
+                sla_due_date__lt=timezone_now(),
+                status__in=['pending', 'investigating', 'assigned', 'in_progress']
+            ).count()
+            
+            # Calculate resolution rate
+            total_resolved = statistics['resolved_incidents'] + statistics['closed_incidents']
+            if statistics['total_incidents'] > 0:
+                statistics['resolution_rate'] = round(
+                    (total_resolved / statistics['total_incidents']) * 100, 1
+                )
+            else:
+                statistics['resolution_rate'] = 0
+            
+            # Calculate average resolution hours
+            resolved_incidents = queryset.filter(
+                status__in=['resolved', 'closed'],
+                resolved_at__isnull=False
+            )
+            
+            if resolved_incidents.exists():
+                total_hours = 0
+                count = 0
+                for incident in resolved_incidents:
+                    if incident.resolved_at and incident.created_at:
+                        hours = (incident.resolved_at - incident.created_at).total_seconds() / 3600
+                        total_hours += hours
+                        count += 1
+                if count > 0:
+                    statistics['avg_resolution_hours'] = round(total_hours / count, 1)
+            
+            # Get by status
+            status_counts = queryset.values('status').annotate(count=models.Count('id'))
+            statistics['by_status'] = {item['status']: item['count'] for item in status_counts}
+            
+            # Get by severity
+            severity_counts = queryset.values('severity').annotate(count=models.Count('id'))
+            statistics['by_severity'] = {item['severity']: item['count'] for item in severity_counts}
+            
+            # Get by priority
+            priority_counts = queryset.values('priority').annotate(count=models.Count('id'))
+            statistics['by_priority'] = {item['priority']: item['count'] for item in priority_counts}
+            
+            # Get by department
+            dept_counts = queryset.values('department__name').annotate(count=models.Count('id'))
+            statistics['by_department'] = {item['department__name'] or 'Unassigned': item['count'] for item in dept_counts}
+            
+            # Get recent incidents
+            recent = queryset.order_by('-created_at')[:10]
+            statistics['recent_incidents'] = [
+                {
+                    'incident_number': inc.incident_number,
+                    'title': inc.title,
+                    'severity': inc.severity,
+                    'status': inc.status,
+                    'created_at': inc.created_at,
+                    'assigned_to': inc.assigned_to.full_name if inc.assigned_to else 'Unassigned'
+                }
+                for inc in recent
+            ]
+            
+            # Count danger zone incidents
+            statistics['danger_zone_incidents'] = queryset.filter(danger_zone=True).count()
+            
+            return statistics
+            
+        except Exception as e:
+            logger.error(f"Error getting incident statistics: {str(e)}", exc_info=True)
+            # Return empty statistics on error
+            return {
+                'total_incidents': 0,
+                'open_incidents': 0,
+                'resolved_incidents': 0,
+                'closed_incidents': 0,
+                'overdue_incidents': 0,
+                'resolution_rate': 0,
+                'avg_resolution_hours': 0,
+                'by_status': {},
+                'by_severity': {},
+                'by_priority': {},
+                'by_department': {},
+                'timeframe_days': timeframe_days,
+                'recent_incidents': [],
+                'danger_zone_incidents': 0,
+                'sla_violations': []
+            }
     
     @staticmethod
     def check_sla_compliance():
