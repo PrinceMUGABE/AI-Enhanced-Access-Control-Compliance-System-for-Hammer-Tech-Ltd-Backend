@@ -30,6 +30,10 @@ from datetime import timedelta
 from django.utils.timezone import now
 from collections import Counter
 from .login_attempts import LoginAttemptManager
+from incidentApp.models import Incident
+from incidentApp.utils import IncidentUtils, DangerZoneAnalyzer
+from notificationApp.models import Notification
+from notificationApp.views import NotificationUtils as NotificationUtilsClass
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -120,6 +124,262 @@ def generate_secure_password():
         error_msg = f"Error generating secure password: {str(e)}"
         print(error_msg)
         return None
+
+# Update the create_incident_from_login_failure function in userApp/views.py
+
+def create_incident_from_login_failure(user, failure_type, data):
+    """
+    Create an incident when a user has failed login attempts or account is locked.
+    
+    Args:
+        user: The CustomUser object
+        failure_type: 'failed_login', 'account_locked', or 'locked_account_login_attempt'
+        data: Dictionary with additional data
+    """
+    try:
+        from incidentApp.models import Incident
+        from incidentApp.utils import IncidentUtils
+        from notificationApp.views import NotificationUtils as NotificationUtilsClass
+        from userApp.models import UserLog
+        
+        print(f"\n{'='*60}")
+        print(f"🚨 CREATING INCIDENT FROM LOGIN FAILURE")
+        print(f"   User: {user.email}")
+        print(f"   Type: {failure_type}")
+        print(f"   Data: {data}")
+        print(f"{'='*60}")
+        
+        # Get the most recent UserLog for this user
+        recent_log = UserLog.objects.filter(
+            user_email=user.email
+        ).order_by('-timestamp').first()
+        
+        if not recent_log:
+            print(f"⚠️ No recent log found for user {user.email}, creating a basic log entry")
+            recent_log = UserLog.objects.create(
+                user=user,
+                user_email=user.email,
+                user_role=user.role,
+                log_type='authentication',
+                activity='login_failed',
+                description=f'Failed login attempt for {user.email}',
+                is_success=False,
+                timestamp=now(),
+                ip_address=data.get('ip_address', 'Unknown'),
+                user_agent=data.get('user_agent', 'Unknown')
+            )
+            print(f"   Created basic log entry: {recent_log.id}")
+        
+        # Determine severity and priority based on failure type and attempts
+        if failure_type == 'account_locked':
+            severity = 'high'
+            priority = 'high'
+            danger_zone = True
+            risk_score = 85
+            title = f"[LOCKED] Account Locked: {user.email}"
+            
+        elif failure_type == 'locked_account_login_attempt':
+            severity = 'critical'
+            priority = 'urgent'
+            danger_zone = True
+            risk_score = 90
+            remaining = data.get('remaining_seconds', 180)
+            minutes = data.get('minutes_remaining', 3)
+            title = f"[LOCKED ACCOUNT LOGIN] {user.email} - Attempted login while locked"
+            
+        else:  # failed_login
+            # Calculate severity based on failed attempts
+            failed_attempts = data.get('failed_attempts', 0)
+            remaining_attempts = data.get('remaining_attempts', 3)
+            
+            if failed_attempts >= 3 or remaining_attempts <= 0:
+                severity = 'high'
+                priority = 'high'
+                risk_score = 75
+            elif failed_attempts >= 2:
+                severity = 'medium'
+                priority = 'medium'
+                risk_score = 60
+            else:
+                severity = 'low'
+                priority = 'low'
+                risk_score = 40
+            
+            danger_zone = failed_attempts >= 2
+            title = f"[{failed_attempts}/3] Failed Login Attempt: {user.email}"
+        
+        # Check if incident already exists for this log (to avoid duplicates)
+        if recent_log.incidents.exists():
+            existing_incident = recent_log.incidents.first()
+            print(f"⚠️ Incident already exists for log {recent_log.id}: {existing_incident.incident_number}")
+            return existing_incident
+        
+        # Create the incident
+        incident = Incident.objects.create(
+            log=recent_log,
+            title=title,
+            description=create_failure_description(user, failure_type, data),
+            severity=severity,
+            priority=priority,
+            risk_score=risk_score,
+            danger_zone=danger_zone,
+            status='pending',
+            created_by=None,  # System created
+        )
+        
+        # Auto-assign department if possible
+        if user.department:
+            incident.department = user.department
+        elif user.role == 'security_analyst' and user.departments.exists():
+            incident.department = user.departments.first()
+        
+        # Auto-assign to a security analyst or admin
+        assigned_user = IncidentUtils.assign_incident_to_user(incident)
+        if assigned_user:
+            print(f"   Incident assigned to: {assigned_user.email}")
+            NotificationUtilsClass.create_incident_assigned_notification(incident)
+        else:
+            print(f"   ⚠️ No eligible user found for assignment")
+        
+        # Create notification for the user who had the failure
+        NotificationUtilsClass.create_notification(
+            user=user,
+            notification_type='system_alert',
+            title=f"Security Alert: {incident.incident_number}",
+            message=f"A security incident has been created due to login issues on your account. {incident.title}",
+            priority='high' if failure_type in ['account_locked', 'locked_account_login_attempt'] else 'medium',
+            incident=incident,
+            action_link=f"/incidents/{incident.id}",
+            action_text="View Incident"
+        )
+        
+        # If account locked or locked account login attempt, also notify admins
+        if failure_type in ['account_locked', 'locked_account_login_attempt']:
+            from userApp.models import CustomUser
+            admins = CustomUser.objects.filter(role='admin', is_active=True)
+            for admin in admins:
+                if admin != user:
+                    priority = 'urgent' if failure_type == 'locked_account_login_attempt' else 'high'
+                    title_msg = f"Account Locked: {user.email}" if failure_type == 'account_locked' else f"⚠️ LOCKED ACCOUNT LOGIN ATTEMPT: {user.email}"
+                    
+                    NotificationUtilsClass.create_notification(
+                        user=admin,
+                        notification_type='system_alert',
+                        title=title_msg,
+                        message=f"User account {user.email} {'is locked' if failure_type == 'account_locked' else 'tried to login while locked'} due to multiple failed login attempts.",
+                        priority=priority,
+                        incident=incident,
+                        action_link=f"/incidents/{incident.id}",
+                        action_text="View Incident"
+                    )
+        
+        print(f"✅ Incident created: {incident.incident_number}")
+        print(f"{'='*60}\n")
+        
+        return incident
+        
+    except Exception as e:
+        print(f"❌ Error creating incident from login failure: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def create_failure_description(user, failure_type, data):
+    """Create a detailed description for the incident"""
+    
+    timestamp = now().strftime('%Y-%m-%d %H:%M:%S')
+    ip_address = data.get('ip_address', 'Unknown')
+    user_agent = data.get('user_agent', 'Unknown')
+    failed_attempts = data.get('failed_attempts', 0)
+    remaining_attempts = data.get('remaining_attempts', 3)
+    
+    description = f"""
+🚨 LOGIN SECURITY INCIDENT DETECTED
+{'='*60}
+
+DETECTION TIME: {timestamp}
+USER: {user.email}
+FULL NAME: {user.full_name}
+ROLE: {user.role}
+IP ADDRESS: {ip_address}
+USER AGENT: {user_agent}
+
+{'='*60}
+
+INCIDENT TYPE: {failure_type.upper().replace('_', ' ')}
+
+"""
+    
+    if failure_type == 'locked_account_login_attempt':
+        remaining_seconds = data.get('remaining_seconds', 180)
+        minutes = data.get('minutes_remaining', 3)
+        seconds = data.get('seconds_remaining', 0)
+        locked_until = data.get('locked_until', 'Unknown')
+        
+        description += f"""
+⚠️ CRITICAL SECURITY EVENT: LOCKED ACCOUNT LOGIN ATTEMPT
+
+The user attempted to login while their account was locked.
+
+LOCK DETAILS:
+- Account Locked Until: {locked_until}
+- Remaining Lock Time: {minutes} minute(s) and {seconds} second(s) ({remaining_seconds} seconds)
+- Total Failed Attempts: {failed_attempts}
+
+SECURITY IMPLICATIONS:
+- User attempted to bypass account lock
+- Potential security breach in progress
+- Immediate investigation recommended
+"""
+    
+    elif failure_type == 'account_locked':
+        description += f"""
+ACCOUNT LOCKED:
+- Reason: Multiple failed login attempts
+- Failed Attempts: {failed_attempts}
+- Remaining Lock Time: {data.get('remaining_seconds', 180)} seconds
+- Lock Duration: 3 minutes
+
+ACCOUNT STATUS:
+- Account is now locked
+- User cannot login until lock expires
+- Security review recommended
+"""
+    else:
+        description += f"""
+FAILED LOGIN ATTEMPT:
+- Attempt Count: {failed_attempts}/3
+- Remaining Attempts: {remaining_attempts}
+- Stage: Password Verification
+
+ACCOUNT STATUS:
+- Account is {'LOCKED' if data.get('is_locked') else 'still active'}
+- {'Account will be locked on next failed attempt' if remaining_attempts <= 1 else f'{remaining_attempts} attempts remaining before lock'}
+"""
+    
+    description += f"""
+{'='*60}
+
+RISK ASSESSMENT:
+- Account Security: {'CRITICAL - ACCOUNT LOCK BYPASS ATTEMPT' if failure_type == 'locked_account_login_attempt' else 'COMPROMISED - LOCKED' if failure_type == 'account_locked' else 'AT RISK'}
+- {'Immediate security breach investigation required' if failure_type == 'locked_account_login_attempt' else 'Immediate security review required' if failure_type == 'account_locked' else 'Monitor and review user activity'}
+- Threat Level: {'CRITICAL' if failure_type == 'locked_account_login_attempt' else 'HIGH' if failure_type == 'account_locked' else 'MEDIUM'}
+
+SECURITY RECOMMENDATIONS:
+1. {'URGENT: Force password reset immediately and review all recent activity' if failure_type == 'locked_account_login_attempt' else 'Force password reset immediately' if failure_type == 'account_locked' else 'Encourage user to reset password'}
+2. {'Investigate if credentials were compromised' if failure_type == 'locked_account_login_attempt' else 'Review recent account activity for unauthorized access'}
+3. {'Check for multiple IP addresses attempting this login' if failure_type == 'locked_account_login_attempt' else 'Check if the IP address {ip_address} is legitimate'}
+4. {'Enable additional authentication measures immediately' if failure_type == 'locked_account_login_attempt' else 'Consider enabling additional authentication measures'}
+5. {'Escalate to security team for immediate action' if failure_type == 'locked_account_login_attempt' else 'Monitor for similar patterns across other accounts'}
+
+{'='*60}
+"""
+    
+    return description
+
+
+
 
 # ==================== AUTHENTICATION VIEWS ====================
 
@@ -354,7 +614,7 @@ def register_user(request):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_with_otp_request(request):
-    """Step 1: Request OTP for login with attempt tracking"""
+    """Step 1: Request OTP for login with attempt tracking and incident creation"""
     start_time = time.time()
     
     try:
@@ -400,13 +660,20 @@ def login_with_otp_request(request):
         # Check if account is locked due to too many attempts
         can_attempt, lock_message, remaining_seconds = LoginAttemptManager.check_login_attempts(user)
         if not can_attempt:
+            # Account is locked - create an incident for the lock
+            create_incident_from_login_failure(user, "account_locked", {
+                'reason': lock_message,
+                'remaining_seconds': remaining_seconds,
+                'failed_attempts': user.failed_login_attempts
+            })
+            
             response = Response({
                 'message': lock_message,
                 'is_locked': True,
                 'remaining_seconds': remaining_seconds,
                 'remaining_minutes': remaining_seconds // 60,
                 'remaining_seconds_display': remaining_seconds % 60
-            }, status=status.HTTP_423_LOCKED)  # 423 Locked status code
+            }, status=status.HTTP_423_LOCKED)
             
             ActivityLogger.log_authentication(
                 user=user,
@@ -422,8 +689,25 @@ def login_with_otp_request(request):
         # Verify password
         if not user.check_password(password):
             print(f"ERROR: Invalid password for user {email}")
+            
             # Handle failed login attempt
             is_locked, fail_message, lock_duration = LoginAttemptManager.handle_failed_login(user, request)
+            
+            # ============================================================
+            # CREATE INCIDENT FOR FAILED LOGIN ATTEMPT
+            # ============================================================
+            incident_data = {
+                'reason': fail_message,
+                'failed_attempts': user.failed_login_attempts,
+                'lock_duration': lock_duration if is_locked else None
+            }
+            
+            if is_locked:
+                # Create incident for account lock
+                create_incident_from_login_failure(user, "account_locked", incident_data)
+            else:
+                # Create incident for failed login
+                create_incident_from_login_failure(user, "failed_login", incident_data)
             
             if is_locked:
                 response = Response({
@@ -527,13 +811,13 @@ def login_with_otp_request(request):
             is_success=False,
             start_time=start_time
         )
-        return response  
+        return response
 
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def login_with_otp_verify(request):
-    """Step 2: Verify OTP and complete login with attempt tracking"""
+    """Step 2: Verify OTP and complete login with attempt tracking and incident creation"""
     start_time = time.time()
     
     try:
@@ -582,6 +866,14 @@ def login_with_otp_verify(request):
             seconds = remaining % 60
             
             message = f"Account is locked. Please try again in {minutes} minute(s) and {seconds} second(s)."
+            
+            # Create incident for account lock (OTP verification stage)
+            create_incident_from_login_failure(user, "account_locked", {
+                'reason': message,
+                'remaining_seconds': remaining,
+                'stage': 'otp_verification'
+            })
+            
             response = Response({
                 'message': message,
                 'is_locked': True,
@@ -605,6 +897,21 @@ def login_with_otp_verify(request):
         if not is_valid:
             # Increment failed login attempts for OTP failure
             is_locked, fail_message, lock_duration = LoginAttemptManager.handle_failed_login(user, request)
+            
+            # ============================================================
+            # CREATE INCIDENT FOR OTP FAILURE
+            # ============================================================
+            incident_data = {
+                'reason': fail_message,
+                'failed_attempts': user.failed_login_attempts,
+                'otp_attempt': True,
+                'lock_duration': lock_duration if is_locked else None
+            }
+            
+            if is_locked:
+                create_incident_from_login_failure(user, "account_locked", incident_data)
+            else:
+                create_incident_from_login_failure(user, "failed_login", incident_data)
             
             if is_locked:
                 print(f"ERROR: OTP verification failed for {email}. Account locked due to too many failed attempts.")
@@ -704,7 +1011,6 @@ def login_with_otp_verify(request):
             start_time=start_time
         )
         return response
-
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
@@ -2818,7 +3124,7 @@ def get_access_control_stats(request):
         return Response({"error": str(e)}, status=500)
 
 
-        
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 @display_response_data
