@@ -95,12 +95,6 @@ def get_department_risk_assessments(request):
         for idx, department in enumerate(departments, 1):
             debug_print(f"\n[{idx}/{departments.count()}] Processing: {department.name}", level="STEP")
             
-            # Filter based on user permissions
-            if user.role == 'security_analyst':
-                if user.departments.exists() and department not in user.departments.all():
-                    debug_print(f"  Skipping - not in analyst's departments", level="WARNING")
-                    continue
-            
             risk_data = RiskCalculator.calculate_department_risk(department, timeframe_days)
             debug_print(f"  Risk Score: {risk_data['overall_risk_score']:.1f} ({risk_data['risk_level']})", level="DATA")
             debug_print(f"  Incidents: {risk_data['incident_count']}, Users: {risk_data['user_count']}", level="INFO")
@@ -174,12 +168,6 @@ def get_risk_dashboard_data(request):
         
         department_risks = []
         for department in departments:
-            # Skip if security analyst doesn't have access
-            if user.role == 'security_analyst':
-                if user.departments.exists() and department not in user.departments.all():
-                    debug_print(f"  Skipping {department.name} - not in analyst's departments", level="WARNING")
-                    continue
-            
             risk_data = RiskCalculator.calculate_department_risk(department, timeframe_days)
             department_risks.append({
                 'department': department.name,
@@ -213,12 +201,6 @@ def get_risk_dashboard_data(request):
         debug_print("\n📍 STEP 3: Fetching high-risk users (IMPROVED)", level="STEP")
         users = CustomUser.objects.filter(is_active=True)
         debug_print(f"Total active users: {users.count()}", level="DATA")
-        
-        # Apply department filter for security analysts
-        if user.role == 'security_analyst' and user.departments.exists():
-            dept_ids = list(user.departments.values_list('id', flat=True))
-            users = users.filter(department__in=dept_ids)
-            debug_print(f"Filtered to analyst's departments: {users.count()} users", level="INFO")
         
         high_risk_users = []
         user_count_processed = 0
@@ -598,18 +580,14 @@ def run_risk_assessment(request):
             "assessments": {}
         }
         
+        dept_assessments = []
+        
         if include_departments:
             debug_print("\n📍 Assessing departments...", level="STEP")
             departments = Department.objects.filter(status='active')
             debug_print(f"Found {departments.count()} active departments", level="DATA")
             
-            dept_assessments = []
             for department in departments:
-                if user.role == 'security_analyst':
-                    if user.departments.exists() and department not in user.departments.all():
-                        debug_print(f"  Skipping {department.name} (not in analyst's departments)", level="WARNING")
-                        continue
-                
                 risk_data = RiskCalculator.calculate_department_risk(department, timeframe_days)
                 dept_assessments.append(risk_data)
                 debug_print(f"  {department.name}: Risk={risk_data['overall_risk_score']:.1f} ({risk_data['risk_level']})", level="INFO")
@@ -722,23 +700,13 @@ def get_department_risk_detail(request, department_id):
         
         # Check permissions
         debug_print("Checking user permissions...", level="INFO")
-        if not (user.is_admin or user.is_hr):
-            if user.role == 'security_analyst':
-                if user.departments.exists() and department not in user.departments.all():
-                    debug_print(f"User {user.email} cannot access department {department.name} (not in assigned departments)", level="ERROR")
-                    return Response(
-                        {"error": "You don't have permission to view this department's risk assessment."},
-                        status=status.HTTP_403_FORBIDDEN
-                    )
-                debug_print(f"Security analyst access granted for department {department.name}", level="SUCCESS")
-            else:
-                debug_print(f"User {user.email} lacks permission for department risk detail", level="ERROR")
-                return Response(
-                    {"error": "You don't have permission to view risk assessments."},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-        else:
-            debug_print(f"Admin/HR access granted for department {department.name}", level="SUCCESS")
+        if not (user.is_admin or user.is_hr or user.role == 'security_analyst'):
+            debug_print(f"User {user.email} lacks permission for department risk detail", level="ERROR")
+            return Response(
+                {"error": "You don't have permission to view risk assessments."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        debug_print(f"Access granted for department {department.name}", level="SUCCESS")
         
         # Get timeframe from query params
         timeframe_days = int(request.query_params.get('timeframe', 90))
@@ -869,14 +837,6 @@ def get_user_risk_profiles(request):
             users = users.filter(department_id=department_id)
             debug_print(f"Filtered to department ID {department_id}: {users.count()} users", level="INFO")
         
-        # Apply role-based filtering
-        if user.role == 'security_analyst':
-            if user.departments.exists():
-                dept_ids = list(user.departments.values_list('id', flat=True))
-                users = users.filter(department__in=dept_ids)
-                debug_print(f"Security analyst filter - accessible departments: {dept_ids}", level="INFO")
-                debug_print(f"Users after department filter: {users.count()}", level="DATA")
-        
         # Calculate risk for each user
         debug_print(f"\nCalculating risk profiles for up to {min(limit, users.count())} users...", level="STEP")
         risk_profiles = []
@@ -959,15 +919,8 @@ def get_user_risk_profile_detail(request, user_id):
             has_permission = True
             debug_print("Admin/HR permission granted", level="SUCCESS")
         elif user.role == 'security_analyst':
-            # Check if target user is in analyst's departments
-            if user.departments.exists():
-                if target_user.department and target_user.department in user.departments.all():
-                    has_permission = True
-                    debug_print(f"Security analyst permission granted - user in department {target_user.department.name}", level="SUCCESS")
-                else:
-                    debug_print(f"Target user not in analyst's departments", level="WARNING")
-            else:
-                debug_print("Security analyst has no departments assigned", level="WARNING")
+            has_permission = True
+            debug_print("Security analyst permission granted (org-wide access)", level="SUCCESS")
         elif user.id == target_user.id:
             has_permission = True
             debug_print("User viewing own profile - permission granted", level="SUCCESS")
@@ -1219,12 +1172,6 @@ def get_risk_heatmap_data(request):
         heatmap_data = []
         
         for dept in departments:
-            # Skip if security analyst doesn't have access
-            if user.role == 'security_analyst':
-                if user.departments.exists() and dept not in user.departments.all():
-                    debug_print(f"  Skipping {dept.name} (not in analyst's departments)", level="WARNING")
-                    continue
-            
             # Get department risk data
             risk_data = RiskCalculator.calculate_department_risk(dept, timeframe_days)
             
@@ -1335,7 +1282,3 @@ def calculate_category_risk(department, category):
     except Exception as e:
         logger.error(f"Error calculating category risk: {str(e)}")
         return 0
-    
-    
-    
-    

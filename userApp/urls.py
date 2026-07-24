@@ -49,9 +49,9 @@ urlpatterns = [
     path('get_access_control_stats/', views.get_access_control_stats, name='access-control-stats'),
     path('access-control/users/', views.get_users_for_access_control, name='access-control-users'),
     path('access-control/users/<int:user_id>/logs/', views.get_user_activity_logs, name='user-activity-logs'),
+    path('get_user_activity_logs/<int:user_id>/', views.get_user_activity_logs, name='get-user-activity-logs'),  # <-- added
     path('get_users_for_access_control/', views.get_users_for_access_control, name='get_users_for_access_control'),
-    
-    # ============================================================
+        # ============================================================
     # ACTIVITY LOGS ENDPOINTS
     # ============================================================
     path('logs/', views.UserLogListAPIView.as_view(), name='user-logs-list'),
